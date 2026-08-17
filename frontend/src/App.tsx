@@ -11,6 +11,7 @@ import ServerControl from './components/ServerControl'
 import SessionPanel from './components/SessionPanel'
 import SettingsPanel from './components/SettingsPanel'
 import SignalsPanel from './components/SignalsPanel'
+import StockScreener from './components/StockScreener'
 import TickerTape from './components/TickerTape'
 import TradePanel from './components/TradePanel'
 import TradesTable from './components/TradesTable'
@@ -40,6 +41,7 @@ type Tab =
   | 'live'
   | 'analyse'
   | 'options'
+  | 'screener'
   | 'trade'
   | 'orders'
   | 'settings'
@@ -53,6 +55,7 @@ const NAV: { group: string; tabs: NavTab[] }[] = [
     group: 'Market',
     tabs: [
       { id: 'live', label: 'Live', hint: 'Chart, positions, and signals' },
+      { id: 'screener', label: 'Screener', hint: 'High-beta stock scanner' },
       { id: 'analyse', label: 'Analyse', hint: 'Score any symbol on demand' },
       { id: 'options', label: 'Options', hint: 'Chain, option orders, option legs' },
     ],
@@ -447,6 +450,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {tab === 'screener' && <StockScreener />}
 
       {tab === 'analyse' && <AnalysePanel universe={status?.symbols ?? []} />}
 
