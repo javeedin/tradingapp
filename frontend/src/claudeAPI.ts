@@ -46,8 +46,14 @@ export async function analyzeOptionChain(
   })
 
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.error?.message || 'Failed to analyze with Claude')
+    let errorDetail = 'Failed to analyze with Claude'
+    try {
+      const error = await response.json()
+      errorDetail = error.error?.message || error.detail || JSON.stringify(error, null, 2)
+    } catch {
+      errorDetail = await response.text()
+    }
+    throw new Error(`Claude API error:\n\n${errorDetail}`)
   }
 
   const data = await response.json()
