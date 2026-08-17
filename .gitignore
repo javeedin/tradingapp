@@ -17,9 +17,8 @@ htmlcov/
 .coverage
 
 # --- Data / artifacts ---
-data/*.duckdb
-data/*.duckdb.wal
-data/cache/
+data/
+backend/data/
 logs/
 *.log
 
