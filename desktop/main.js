@@ -43,7 +43,13 @@ let adoptedExistingBackend = false
 // path) or a crash during use (reported by the exit handler).
 let backendSpawned = false
 let dashboardLoaded = false
+let splashLoad = Promise.resolve()
 const backendLog = []
+
+// Chromium's ERR_ABORTED. Raised when one navigation supersedes another, which
+// is exactly what happens when the dashboard replaces the splash screen — the
+// page loads fine, only the abandoned request rejects.
+const ERR_ABORTED = -3
 
 /** Remember recent backend output so a startup failure can be shown to the user. */
 function recordLog(chunk) {
@@ -204,7 +210,11 @@ function createWindow() {
     },
   })
 
-  mainWindow.loadURL(loadingPage('Starting the Python backend…'))
+  // Tracked so the dashboard navigation can wait for it to settle. Navigating
+  // while this is still in flight aborts it, and the aborted load rejects.
+  splashLoad = mainWindow
+    .loadURL(loadingPage('Starting the Python backend…'))
+    .catch(() => {})
 
   // External links (the Breeze login) belong in the real browser, not in a
   // frameless Electron window with no address bar.
@@ -223,6 +233,28 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null
   })
+}
+
+/**
+ * Navigate the window from the splash to the dashboard.
+ *
+ * Waits for the splash's own load to settle first — when a backend is already
+ * running the health check passes in milliseconds, so without this the two
+ * navigations overlap and Chromium aborts one of them. An ERR_ABORTED that
+ * still leaves us on the dashboard is treated as success, since the page did
+ * load; only the superseded request failed.
+ */
+async function loadDashboard() {
+  await splashLoad
+
+  try {
+    await mainWindow.loadURL(BASE_URL)
+  } catch (err) {
+    const aborted = err && (err.errno === ERR_ABORTED || /\(-3\)/.test(String(err.message)))
+    const arrived = mainWindow && mainWindow.webContents.getURL().startsWith(BASE_URL)
+    if (!aborted || !arrived) throw err
+    console.log('[desktop] ignoring superseded navigation; dashboard loaded')
+  }
 }
 
 function stopBackend() {
@@ -272,7 +304,7 @@ app.whenReady().then(async () => {
   try {
     await waitForBackend()
     if (mainWindow) {
-      await mainWindow.loadURL(BASE_URL)
+      await loadDashboard()
       dashboardLoaded = true
     }
   } catch (err) {
