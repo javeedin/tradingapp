@@ -28,6 +28,7 @@ from app.data.store import MarketStore
 from app.models import (
     DEFAULT_INTRADAY_PRODUCT,
     ExitReason,
+    OrderStatus,
     ProductType,
     Side,
     SignalAction,
@@ -303,7 +304,14 @@ class LiveTrader:
                 now=now,
                 intraday=self.intraday,
             )
+
             if exit_check is None:
+                # No exit triggered. If the active policy averages down, this is
+                # where an add is considered — after the stop check, so a policy
+                # that still has a stop always exits in preference to adding.
+                action = self._consider_average(position, price, atr_value, now)
+                if action:
+                    actions.append(action)
                 continue
 
             reason, exit_price = exit_check
@@ -325,6 +333,62 @@ class LiveTrader:
 
         return actions
 
+    def _consider_average(
+        self, position: Any, price: float, atr: float, now: datetime
+    ) -> dict[str, Any] | None:
+        """Average into a losing position if the active exit policy allows it."""
+        if not self.risk.exit_policy.averages_down or atr <= 0:
+            return None
+
+        decision = self.risk.should_average_down(
+            position, price, atr, self.broker.equity
+        )
+        if not decision.should_add:
+            return None
+
+        # Levels are recomputed from the new average, not the original entry —
+        # a target priced off the first entry may be unreachable after averaging.
+        stoploss, target = self.risk.levels_after_add(position, atr)
+
+        order = self.broker.add_to_position(
+            symbol=position.symbol,
+            quantity=decision.quantity,
+            price=price,
+            stoploss=stoploss,
+            target=target,
+            timestamp=now,
+        )
+        self.store.save_order(order, origin="average", mode=self.broker.mode)
+
+        if order.status is not OrderStatus.FILLED:
+            self._log_event(
+                "average_rejected", f"{position.symbol}: {order.message}"
+            )
+            return {
+                "action": "average_rejected",
+                "symbol": position.symbol,
+                "reason": order.message,
+            }
+
+        self._log_event(
+            "average",
+            f"{position.symbol} add #{position.adds}: +{decision.quantity} @ "
+            f"₹{price:,.2f} -> avg ₹{position.entry_price:,.2f} x{position.quantity}"
+            + ("" if stoploss is None else f", stop ₹{stoploss:,.2f}"),
+        )
+
+        return {
+            "action": "average",
+            "symbol": position.symbol,
+            "quantity": decision.quantity,
+            "price": round(price, 2),
+            "adds": position.adds,
+            "new_average": round(position.entry_price, 2),
+            "new_quantity": position.quantity,
+            "stoploss": None if stoploss is None else round(stoploss, 2),
+            "reason": decision.reason,
+        }
+
     def _process_symbol(
         self, symbol: str, benchmark: pd.DataFrame | None, now: datetime
     ) -> dict[str, Any] | None:
@@ -342,7 +406,13 @@ class LiveTrader:
         position = self.broker.get_position(symbol)
 
         # Existing position: exit when conviction decays or flips.
+        #
+        # Skipped entirely when the policy averages down — that policy exits only
+        # at target by design, and a signal-decay exit would quietly close
+        # positions it was told to hold and add to.
         if position is not None:
+            if self.risk.exit_policy.averages_down:
+                return None
             if self.engine.should_exit(signal, position.side.sign):
                 trade = self.broker.close_position(
                     symbol, signal.price, ExitReason.SIGNAL, now

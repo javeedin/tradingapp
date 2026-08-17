@@ -89,6 +89,23 @@ class Broker(ABC):
         """Open a short position with a protective stop."""
 
     @abstractmethod
+    def add_to_position(
+        self,
+        symbol: str,
+        quantity: int,
+        price: float,
+        stoploss: float | None = None,
+        target: float | None = None,
+        timestamp: datetime | None = None,
+    ) -> Order:
+        """Average into an open position.
+
+        `stoploss=None` means the active exit policy has no stop, and any resting
+        stop should be cancelled rather than left behind at a level the strategy
+        no longer intends to honour.
+        """
+
+    @abstractmethod
     def close_position(
         self,
         symbol: str,

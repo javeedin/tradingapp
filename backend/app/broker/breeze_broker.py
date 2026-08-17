@@ -276,6 +276,97 @@ class BreezeBroker(Broker):
         return fallback
 
     # ------------------------------------------------------------------
+    # Averaging
+    # ------------------------------------------------------------------
+    def add_to_position(
+        self,
+        symbol: str,
+        quantity: int,
+        price: float,
+        stoploss: float | None = None,
+        target: float | None = None,
+        timestamp: datetime | None = None,
+    ) -> Order:
+        """Average into an open position and reposition its resting stop."""
+        now = timestamp or datetime.now()
+        position = self._positions.get(symbol)
+
+        order = Order(
+            symbol=symbol,
+            side=position.side if position else Side.BUY,
+            quantity=quantity,
+            price=price,
+            product=position.product if position else DEFAULT_INTRADAY_PRODUCT,
+            timestamp=now,
+            stoploss=stoploss,
+            target=target,
+        )
+        self._orders.append(order)
+
+        if position is None:
+            order.status = OrderStatus.REJECTED
+            order.message = f"No open position in {symbol} to average into"
+            return order
+
+        limit_price = self._marketable_limit(price, position.side)
+        try:
+            response = self.client.place_order(
+                stock_code=symbol,
+                exchange_code=self.exchange_code,
+                product=position.product.value,
+                action=position.side.value,
+                order_type="limit",
+                quantity=str(quantity),
+                price=f"{limit_price:.2f}",
+                validity="day",
+                user_remark="auto-average",
+            )
+        except BreezeError as exc:
+            order.status = OrderStatus.REJECTED
+            order.message = f"Averaging order rejected: {exc}"
+            logger.error("Average order failed for %s: %s", symbol, exc)
+            return order
+
+        order_id = str(response.get("order_id") or "")
+        fill_price = (
+            self._resolve_fill_price(order_id, fallback=limit_price)
+            if order_id
+            else limit_price
+        )
+
+        position.add(quantity, fill_price)
+        order.order_id = order_id
+        order.status = OrderStatus.FILLED
+        order.filled_price = fill_price
+        order.filled_quantity = quantity
+        order.message = (
+            f"Averaged in at ₹{fill_price:,.2f}; new average ₹{position.entry_price:,.2f} "
+            f"across {position.quantity} (add #{position.adds})"
+        )
+
+        # The resting stop was priced off the old average and is now wrong. Under
+        # a no-stop policy it must be cancelled outright rather than left behind
+        # at a level the strategy no longer honours.
+        self._cancel_stop_order(symbol)
+        if stoploss is not None:
+            position.stoploss = stoploss
+            if not self._place_stop_order(position):
+                logger.error(
+                    "Could not reposition the stop for %s after averaging — "
+                    "the position is unprotected",
+                    symbol,
+                )
+                order.message += " (WARNING: stop could not be repositioned)"
+        else:
+            logger.warning(
+                "%s now has no resting stop: the active exit policy has none", symbol
+            )
+        if target is not None:
+            position.target = target
+
+        return order
+
+    # ------------------------------------------------------------------
     # Stop orders
     # ------------------------------------------------------------------
     def _place_stop_order(self, position: Position) -> bool:

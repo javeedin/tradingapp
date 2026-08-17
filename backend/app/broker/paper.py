@@ -188,6 +188,76 @@ class PaperBroker(Broker):
         return order
 
     # ------------------------------------------------------------------
+    # Averaging
+    # ------------------------------------------------------------------
+    def add_to_position(
+        self,
+        symbol: str,
+        quantity: int,
+        price: float,
+        stoploss: float | None = None,
+        target: float | None = None,
+        timestamp: datetime | None = None,
+    ) -> Order:
+        now = timestamp or datetime.now()
+        position = self._positions.get(symbol)
+
+        order = Order(
+            symbol=symbol,
+            side=position.side if position else Side.BUY,
+            quantity=quantity,
+            price=price,
+            product=position.product if position else DEFAULT_INTRADAY_PRODUCT,
+            timestamp=now,
+            order_id=f"PAPER-ADD-{uuid.uuid4().hex[:8].upper()}",
+            stoploss=stoploss,
+            target=target,
+        )
+        self._orders.append(order)
+
+        if position is None:
+            order.status = OrderStatus.REJECTED
+            order.message = f"No open position in {symbol} to average into"
+            return order
+        if quantity <= 0 or price <= 0:
+            order.status = OrderStatus.REJECTED
+            order.message = "Averaging requires a positive quantity and price"
+            return order
+
+        fill_price = price + self.slippage(price) * position.side.sign
+        required = fill_price * quantity + self.brokerage(fill_price * quantity)
+        if required > self._cash:
+            order.status = OrderStatus.REJECTED
+            order.message = (
+                f"Insufficient cash to average: need ₹{required:,.2f}, "
+                f"have ₹{self._cash:,.2f}"
+            )
+            return order
+
+        self._cash -= required
+        position.add(quantity, fill_price)
+        # Levels are recomputed from the new average by the caller, which knows
+        # the current ATR; None means the policy has no stop.
+        if stoploss is not None:
+            position.stoploss = stoploss
+        if target is not None:
+            position.target = target
+
+        order.status = OrderStatus.FILLED
+        order.filled_price = fill_price
+        order.filled_quantity = quantity
+        order.message = (
+            f"Averaged in at ₹{fill_price:,.2f}; new average ₹{position.entry_price:,.2f} "
+            f"across {position.quantity} (add #{position.adds})"
+        )
+
+        logger.info(
+            "[paper] AVERAGE %s +%d @ %.2f -> avg %.2f x%d",
+            symbol, quantity, fill_price, position.entry_price, position.quantity,
+        )
+        return order
+
+    # ------------------------------------------------------------------
     # Exits
     # ------------------------------------------------------------------
     def close_position(

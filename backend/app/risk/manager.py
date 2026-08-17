@@ -22,12 +22,34 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 
 from app.config import settings
-from app.models import ExitReason, Position, ProductType, Side
+from app.models import ExitPolicy, ExitReason, Position, ProductType, Side
 
 logger = logging.getLogger(__name__)
 
 # Below this, brokerage and slippage eat any realistic edge.
 MIN_STOP_DISTANCE_PCT = 0.1
+
+
+@dataclass(slots=True)
+class AverageDownDecision:
+    """Whether to add to a losing position, and how much."""
+
+    should_add: bool
+    quantity: int = 0
+    price: float = 0.0
+    reason: str = ""
+    adds_after: int = 0
+    exposure_after: float = 0.0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "should_add": self.should_add,
+            "quantity": self.quantity,
+            "price": round(self.price, 2),
+            "reason": self.reason,
+            "adds_after": self.adds_after,
+            "exposure_after": round(self.exposure_after, 2),
+        }
 
 
 @dataclass(slots=True)
@@ -91,6 +113,10 @@ class RiskManager:
         atr_target_multiplier: float | None = None,
         use_trailing_stop: bool | None = None,
         trail_atr_multiplier: float | None = None,
+        exit_policy: ExitPolicy | None = None,
+        max_adds: int | None = None,
+        add_trigger_atr: float | None = None,
+        max_symbol_exposure_pct: float | None = None,
     ) -> None:
         self.risk_per_trade_pct = (
             risk_per_trade_pct
@@ -123,6 +149,17 @@ class RiskManager:
             trail_atr_multiplier
             if trail_atr_multiplier is not None
             else settings.trail_atr_multiplier
+        )
+
+        self.exit_policy = exit_policy or ExitPolicy(settings.exit_policy)
+        self.max_adds = max_adds if max_adds is not None else settings.max_adds
+        self.add_trigger_atr = (
+            add_trigger_atr if add_trigger_atr is not None else settings.add_trigger_atr
+        )
+        self.max_symbol_exposure_pct = (
+            max_symbol_exposure_pct
+            if max_symbol_exposure_pct is not None
+            else settings.max_symbol_exposure_pct
         )
 
         self._daily_pnl: float = 0.0
@@ -285,6 +322,8 @@ class RiskManager:
         """
         if not self.use_trailing_stop or atr <= 0:
             return False
+        if not self.exit_policy.has_stoploss:
+            return False
 
         trail_distance = atr * self.trail_atr_multiplier
 
@@ -300,6 +339,120 @@ class RiskManager:
                 return True
 
         return False
+
+    # ------------------------------------------------------------------
+    # Averaging down
+    # ------------------------------------------------------------------
+    def should_average_down(
+        self,
+        position: Position,
+        price: float,
+        atr: float,
+        equity: float,
+    ) -> AverageDownDecision:
+        """Whether the active policy wants to add to a losing position.
+
+        Adds are triggered off distance from the *original* entry, not the
+        running average: averaging pulls the average toward price, so measuring
+        from it would make each successive add trigger sooner than the last and
+        accelerate exactly when it should slow down.
+        """
+        if not self.exit_policy.averages_down:
+            return AverageDownDecision(False, reason="Policy is stoploss-only")
+
+        if atr <= 0 or price <= 0 or equity <= 0:
+            return AverageDownDecision(False, reason="Invalid price, ATR, or equity")
+
+        # Only add when the position is actually against us.
+        adverse_pct = -position.drawdown_from_initial_pct
+        if adverse_pct <= 0:
+            return AverageDownDecision(False, reason="Position is not in loss")
+
+        # Each add needs one more ATR step of adverse move than the last, so the
+        # ladder widens instead of stacking near the entry.
+        required_move = atr * self.add_trigger_atr * (position.adds + 1)
+        actual_move = abs(position.initial_entry_price - price)
+        if actual_move < required_move:
+            return AverageDownDecision(
+                False,
+                reason=(
+                    f"Needs {required_move:.2f} of adverse move for add "
+                    f"#{position.adds + 1}; currently {actual_move:.2f}"
+                ),
+            )
+
+        if (
+            self.exit_policy is ExitPolicy.CAPPED_AVERAGING
+            and position.adds >= self.max_adds
+        ):
+            return AverageDownDecision(
+                False,
+                reason=(
+                    f"Add limit reached ({self.max_adds}); the final stop at "
+                    f"{position.stoploss:.2f} now governs this position"
+                ),
+            )
+
+        # Exposure ceiling. Under AVERAGE_NO_STOP this is the only backstop,
+        # and it bounds *exposure*, not loss — a gap through it still takes the
+        # full move.
+        ceiling = equity * self.max_symbol_exposure_pct / 100
+        current_exposure = position.entry_price * position.quantity
+        if current_exposure >= ceiling:
+            return AverageDownDecision(
+                False,
+                reason=(
+                    f"Exposure ₹{current_exposure:,.0f} has reached the "
+                    f"{self.max_symbol_exposure_pct}% per-symbol ceiling "
+                    f"(₹{ceiling:,.0f})"
+                ),
+            )
+
+        # Add the original size again, trimmed to whatever headroom is left.
+        headroom = ceiling - current_exposure
+        quantity = min(position.quantity, int(headroom / price))
+        if quantity < 1:
+            return AverageDownDecision(
+                False,
+                reason=f"Only ₹{headroom:,.0f} of exposure headroom left — under one share",
+            )
+
+        return AverageDownDecision(
+            should_add=True,
+            quantity=quantity,
+            price=price,
+            adds_after=position.adds + 1,
+            exposure_after=current_exposure + quantity * price,
+            reason=(
+                f"Add #{position.adds + 1}: {actual_move:.2f} adverse move "
+                f"({adverse_pct:.2f}%) from the original entry"
+            ),
+        )
+
+    def levels_after_add(
+        self, position: Position, atr: float
+    ) -> tuple[float | None, float]:
+        """Recomputed (stoploss, target) for a position that has just averaged.
+
+        Returns `None` for the stop under AVERAGE_NO_STOP — that policy has no
+        stop by definition, and returning a number the engine would then act on
+        would quietly reintroduce one.
+        """
+        stoploss, target = self.stop_and_target(position.entry_price, atr, position.side)
+
+        if not self.exit_policy.has_stoploss:
+            return None, target
+
+        # Under capped averaging the final stop sits a full step beyond the last
+        # add, so the position is not stopped out by the same noise that
+        # triggered the add.
+        if position.adds >= self.max_adds:
+            extra = atr * self.add_trigger_atr
+            stoploss = (
+                stoploss - extra if position.side is Side.BUY else stoploss + extra
+            )
+
+        return stoploss, target
 
     # ------------------------------------------------------------------
     # Exit checks
@@ -322,7 +475,9 @@ class RiskManager:
         `intraday` is passed in rather than read off the product: squaring off is
         a strategy decision, and cash positions are routinely traded intraday.
         """
-        if position.stop_hit(low, high):
+        # AVERAGE_NO_STOP has no stoploss by definition; honouring one here
+        # would silently reintroduce the floor the policy removes.
+        if self.exit_policy.has_stoploss and position.stop_hit(low, high):
             return ExitReason.STOPLOSS, position.stoploss
 
         if position.target_hit(low, high):
@@ -411,7 +566,15 @@ class RiskManager:
             "risk_per_trade_pct": self.risk_per_trade_pct,
             "max_open_positions": self.max_open_positions,
             "risk_reward_ratio": round(self.risk_reward_ratio(), 2),
-            "trailing_stop": self.use_trailing_stop,
+            "trailing_stop": self.use_trailing_stop and self.exit_policy.has_stoploss,
+            "exit_policy": self.exit_policy.value,
+            "exit_policy_label": self.exit_policy.label,
+            "exit_policy_note": self.exit_policy.risk_note,
+            "has_stoploss": self.exit_policy.has_stoploss,
+            "averages_down": self.exit_policy.averages_down,
+            "max_adds": self.max_adds,
+            "add_trigger_atr": self.add_trigger_atr,
+            "max_symbol_exposure_pct": self.max_symbol_exposure_pct,
         }
 
 

@@ -44,9 +44,25 @@ class Settings(BaseSettings):
     use_trailing_stop: bool = True
     trail_atr_multiplier: float = 1.5
 
+    # --- Exit policy ---
+    # What happens when a position moves against you. See models.ExitPolicy.
+    exit_policy: str = "stop_only"
+    max_adds: int = 2
+    add_trigger_atr: float = 1.0
+    max_symbol_exposure_pct: float = 25.0
+
     # --- Signals ---
     signal_entry_threshold: float = 0.35
     signal_exit_threshold: float = 0.15
+
+    # --- Robotic (automated) trading ---
+    robotic_trading: bool = False
+    robotic_max_positions: int = 6
+    robotic_universe_size: int = 20
+
+    # --- Live safety ---
+    # Hard ceiling on a single live order. 0 disables the check.
+    max_order_value: float = 0.0
 
     # --- Universe & timing ---
     equity_universe: str = "RELIND,TCS,INFTEC,HDFBAN,ICIBAN"
@@ -74,6 +90,15 @@ class Settings(BaseSettings):
         if v not in {"paper", "live"}:
             raise ValueError("TRADING_MODE must be 'paper' or 'live'")
         return v
+
+    @field_validator("exit_policy")
+    @classmethod
+    def _validate_exit_policy(cls, v: str) -> str:
+        allowed = {"stop_only", "capped_averaging", "average_no_stop"}
+        normalised = v.strip().lower()
+        if normalised not in allowed:
+            raise ValueError(f"EXIT_POLICY must be one of {sorted(allowed)}")
+        return normalised
 
     @field_validator("candle_interval")
     @classmethod
