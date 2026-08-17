@@ -1,0 +1,12 @@
+# Pinned-ish runtime deps. Prefer `pip install -e ".[dev]"` which reads pyproject.toml.
+breeze-connect>=1.0.60
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+pandas>=2.2.0
+numpy>=1.26.0
+duckdb>=1.1.0
+python-dotenv>=1.0.0
+apscheduler>=3.10.0
+httpx>=0.27.0

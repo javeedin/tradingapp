@@ -1,0 +1,104 @@
+import type {
+  BacktestResponse,
+  CandleResponse,
+  EngineEvent,
+  Position,
+  Signal,
+  Status,
+  Trade,
+} from './types'
+
+const BASE = '/api'
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...init,
+  })
+
+  if (!response.ok) {
+    // FastAPI puts the human-readable message in `detail`.
+    let message = `${response.status} ${response.statusText}`
+    try {
+      const body = await response.json()
+      if (body?.detail) message = typeof body.detail === 'string' ? body.detail : message
+    } catch {
+      // Non-JSON error body — keep the status line.
+    }
+    throw new Error(message)
+  }
+
+  return response.json() as Promise<T>
+}
+
+export const api = {
+  status: () => request<Status>('/status'),
+
+  positions: () =>
+    request<{ positions: Position[]; account: Status['account'] }>('/positions'),
+
+  signals: () =>
+    request<{ latest: Signal[]; history: unknown[] }>('/signals'),
+
+  trades: () =>
+    request<{ trades: Trade[]; stats: Record<string, number>; session_trades: Trade[] }>(
+      '/trades',
+    ),
+
+  events: () => request<{ events: EngineEvent[] }>('/events'),
+
+  candles: (symbol: string, limit = 300) =>
+    request<CandleResponse>(`/candles/${encodeURIComponent(symbol)}?limit=${limit}`),
+
+  submitSession: (sessionToken: string) =>
+    request<{ connected: boolean; message: string; backfill_error?: string }>('/session', {
+      method: 'POST',
+      body: JSON.stringify({ session_token: sessionToken }),
+    }),
+
+  loginUrl: () => request<{ url: string; instructions: string }>('/session/login-url'),
+
+  killSwitch: () =>
+    request<{ closed: number; halted: boolean }>('/kill-switch', { method: 'POST' }),
+
+  resume: () => request<{ halted: boolean }>('/resume', { method: 'POST' }),
+
+  closePosition: (symbol: string) =>
+    request<{ closed: Trade }>('/positions/close', {
+      method: 'POST',
+      body: JSON.stringify({ symbol }),
+    }),
+
+  runCycle: () => request<Record<string, unknown>>('/cycle', { method: 'POST' }),
+
+  backtest: (payload: {
+    days: number
+    symbols?: string[]
+    intraday?: boolean
+    entry_threshold?: number
+  }) =>
+    request<BacktestResponse>('/backtest', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+}
+
+export function formatCurrency(value: number): string {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 2,
+  }).format(value)
+}
+
+export function formatNumber(value: number, digits = 2): string {
+  return new Intl.NumberFormat('en-IN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value)
+}
+
+export function formatTime(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-IN', { hour12: false })
+}

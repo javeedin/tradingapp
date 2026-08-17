@@ -1,0 +1,387 @@
+"""DuckDB-backed persistence for candles, signals, and trades.
+
+DuckDB is chosen over Postgres/TimescaleDB deliberately: it is an embedded file,
+so there is no server to run on the VPS, and it is columnar, so the scans a
+backtest performs over millions of bars are fast. If the dataset ever outgrows a
+single file, the schema below ports to Timescale unchanged.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import duckdb
+import pandas as pd
+
+from app.config import settings
+from app.models import Candle, Signal, Trade
+
+logger = logging.getLogger(__name__)
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS candles (
+    symbol        VARCHAR   NOT NULL,
+    exchange      VARCHAR   NOT NULL DEFAULT 'NSE',
+    interval      VARCHAR   NOT NULL,
+    timestamp     TIMESTAMP NOT NULL,
+    open          DOUBLE    NOT NULL,
+    high          DOUBLE    NOT NULL,
+    low           DOUBLE    NOT NULL,
+    close         DOUBLE    NOT NULL,
+    volume        DOUBLE    NOT NULL,
+    PRIMARY KEY (symbol, exchange, interval, timestamp)
+);
+
+CREATE TABLE IF NOT EXISTS signals (
+    symbol        VARCHAR   NOT NULL,
+    timestamp     TIMESTAMP NOT NULL,
+    action        VARCHAR   NOT NULL,
+    score         DOUBLE    NOT NULL,
+    price         DOUBLE    NOT NULL,
+    atr           DOUBLE,
+    regime        DOUBLE,
+    trend         DOUBLE,
+    momentum      DOUBLE,
+    volatility    DOUBLE,
+    volume_factor DOUBLE,
+    reasons       VARCHAR,
+    created_at    TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS trades (
+    symbol        VARCHAR   NOT NULL,
+    side          VARCHAR   NOT NULL,
+    quantity      INTEGER   NOT NULL,
+    entry_price   DOUBLE    NOT NULL,
+    exit_price    DOUBLE    NOT NULL,
+    entry_time    TIMESTAMP NOT NULL,
+    exit_time     TIMESTAMP NOT NULL,
+    pnl           DOUBLE    NOT NULL,
+    costs         DOUBLE    NOT NULL,
+    net_pnl       DOUBLE    NOT NULL,
+    exit_reason   VARCHAR   NOT NULL,
+    product       VARCHAR   NOT NULL,
+    mode          VARCHAR   NOT NULL DEFAULT 'paper',
+    created_at    TIMESTAMP DEFAULT current_timestamp
+);
+
+CREATE INDEX IF NOT EXISTS idx_candles_lookup ON candles (symbol, interval, timestamp);
+CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals (symbol, timestamp);
+CREATE INDEX IF NOT EXISTS idx_trades_exit ON trades (exit_time);
+"""
+
+CANDLE_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
+
+
+class MarketStore:
+    """Thread-safe store for market data and trading history.
+
+    DuckDB connections are not safe to share across threads, so every operation
+    holds a lock. Access is low-frequency (a handful of writes per candle), so
+    serialising is cheaper than a connection pool.
+    """
+
+    def __init__(self, db_path: Path | str | None = None) -> None:
+        self.db_path = Path(db_path) if db_path else settings.db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = duckdb.connect(str(self.db_path))
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        with self._lock:
+            for statement in filter(None, (s.strip() for s in SCHEMA.split(";"))):
+                self._conn.execute(statement)
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    def __enter__(self) -> MarketStore:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    # ------------------------------------------------------------------
+    # Candles
+    # ------------------------------------------------------------------
+    def save_candles(
+        self,
+        symbol: str,
+        candles: list[Candle],
+        interval: str,
+        exchange: str = "NSE",
+    ) -> int:
+        """Upsert candles. Returns the number of rows written.
+
+        Re-fetching an overlapping range is normal (backfill windows overlap at
+        the edges, and the latest bar is refetched as it completes), so existing
+        rows are deleted and rewritten rather than skipped — the newer copy of a
+        still-forming bar is the correct one.
+        """
+        if not candles:
+            return 0
+
+        frame = pd.DataFrame(
+            [
+                {
+                    "symbol": symbol,
+                    "exchange": exchange,
+                    "interval": interval,
+                    "timestamp": c.timestamp,
+                    "open": c.open,
+                    "high": c.high,
+                    "low": c.low,
+                    "close": c.close,
+                    "volume": c.volume,
+                }
+                for c in candles
+            ]
+        )
+        frame = frame.drop_duplicates(subset=["symbol", "exchange", "interval", "timestamp"])
+
+        with self._lock:
+            self._conn.register("incoming", frame)
+            try:
+                self._conn.execute(
+                    """
+                    DELETE FROM candles
+                    WHERE (symbol, exchange, interval, timestamp) IN (
+                        SELECT symbol, exchange, interval, timestamp FROM incoming
+                    )
+                    """
+                )
+                self._conn.execute("INSERT INTO candles SELECT * FROM incoming")
+            finally:
+                self._conn.unregister("incoming")
+
+        return len(frame)
+
+    def load_candles(
+        self,
+        symbol: str,
+        interval: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int | None = None,
+        exchange: str = "NSE",
+    ) -> pd.DataFrame:
+        """Return candles as a DataFrame indexed by timestamp, oldest first.
+
+        `limit` takes the most recent N bars — the window a live strategy needs —
+        but the result is still returned oldest-first so indicators compute
+        correctly.
+        """
+        interval = interval or settings.candle_interval
+        clauses = ["symbol = ?", "interval = ?", "exchange = ?"]
+        params: list[Any] = [symbol, interval, exchange]
+
+        if start is not None:
+            clauses.append("timestamp >= ?")
+            params.append(start)
+        if end is not None:
+            clauses.append("timestamp <= ?")
+            params.append(end)
+
+        where = " AND ".join(clauses)
+        if limit is not None:
+            query = f"""
+                SELECT * FROM (
+                    SELECT {", ".join(CANDLE_COLUMNS)} FROM candles
+                    WHERE {where}
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                ) ORDER BY timestamp ASC
+            """
+            params.append(limit)
+        else:
+            query = f"""
+                SELECT {", ".join(CANDLE_COLUMNS)} FROM candles
+                WHERE {where}
+                ORDER BY timestamp ASC
+            """
+
+        with self._lock:
+            frame = self._conn.execute(query, params).fetchdf()
+
+        if frame.empty:
+            return pd.DataFrame(columns=CANDLE_COLUMNS).set_index("timestamp")
+
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"])
+        return frame.set_index("timestamp")
+
+    def latest_candle_time(
+        self, symbol: str, interval: str, exchange: str = "NSE"
+    ) -> datetime | None:
+        """Newest stored bar, used to resume a backfill instead of refetching."""
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT MAX(timestamp) FROM candles
+                WHERE symbol = ? AND interval = ? AND exchange = ?
+                """,
+                [symbol, interval, exchange],
+            ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def candle_count(self, symbol: str, interval: str, exchange: str = "NSE") -> int:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT COUNT(*) FROM candles
+                WHERE symbol = ? AND interval = ? AND exchange = ?
+                """,
+                [symbol, interval, exchange],
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def symbols(self) -> list[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT symbol FROM candles ORDER BY symbol"
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    # ------------------------------------------------------------------
+    # Signals
+    # ------------------------------------------------------------------
+    def save_signal(self, signal: Signal) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO signals (
+                    symbol, timestamp, action, score, price, atr,
+                    regime, trend, momentum, volatility, volume_factor, reasons
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    signal.symbol,
+                    signal.timestamp,
+                    signal.action.value,
+                    signal.score,
+                    signal.price,
+                    signal.atr,
+                    signal.factors.regime,
+                    signal.factors.trend,
+                    signal.factors.momentum,
+                    signal.factors.volatility,
+                    signal.factors.volume,
+                    " | ".join(signal.reasons),
+                ],
+            )
+
+    def recent_signals(self, limit: int = 100, symbol: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM signals"
+        params: list[Any] = []
+        if symbol:
+            query += " WHERE symbol = ?"
+            params.append(symbol)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        with self._lock:
+            frame = self._conn.execute(query, params).fetchdf()
+        return frame.to_dict("records") if not frame.empty else []
+
+    # ------------------------------------------------------------------
+    # Trades
+    # ------------------------------------------------------------------
+    def save_trade(self, trade: Trade, mode: str | None = None) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO trades (
+                    symbol, side, quantity, entry_price, exit_price,
+                    entry_time, exit_time, pnl, costs, net_pnl,
+                    exit_reason, product, mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    trade.symbol,
+                    trade.side.value,
+                    trade.quantity,
+                    trade.entry_price,
+                    trade.exit_price,
+                    trade.entry_time,
+                    trade.exit_time,
+                    trade.pnl,
+                    trade.costs,
+                    trade.net_pnl,
+                    trade.exit_reason.value,
+                    trade.product.value,
+                    mode or settings.trading_mode,
+                ],
+            )
+
+    def recent_trades(self, limit: int = 100, mode: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM trades"
+        params: list[Any] = []
+        if mode:
+            query += " WHERE mode = ?"
+            params.append(mode)
+        query += " ORDER BY exit_time DESC LIMIT ?"
+        params.append(limit)
+
+        with self._lock:
+            frame = self._conn.execute(query, params).fetchdf()
+        return frame.to_dict("records") if not frame.empty else []
+
+    def trade_stats(self, mode: str | None = None) -> dict[str, Any]:
+        """Aggregate performance across stored trades."""
+        where = "WHERE mode = ?" if mode else ""
+        params: list[Any] = [mode] if mode else []
+
+        with self._lock:
+            row = self._conn.execute(
+                f"""
+                SELECT
+                    COUNT(*)                                        AS total_trades,
+                    COALESCE(SUM(net_pnl), 0)                       AS total_pnl,
+                    COUNT(*) FILTER (WHERE net_pnl > 0)             AS wins,
+                    COUNT(*) FILTER (WHERE net_pnl <= 0)            AS losses,
+                    COALESCE(AVG(net_pnl) FILTER (WHERE net_pnl > 0), 0)  AS avg_win,
+                    COALESCE(AVG(net_pnl) FILTER (WHERE net_pnl <= 0), 0) AS avg_loss,
+                    COALESCE(MAX(net_pnl), 0)                       AS best_trade,
+                    COALESCE(MIN(net_pnl), 0)                       AS worst_trade,
+                    COALESCE(SUM(costs), 0)                         AS total_costs
+                FROM trades {where}
+                """,
+                params,
+            ).fetchone()
+
+        if not row or not row[0]:
+            return {
+                "total_trades": 0,
+                "total_pnl": 0.0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "profit_factor": 0.0,
+                "best_trade": 0.0,
+                "worst_trade": 0.0,
+                "total_costs": 0.0,
+            }
+
+        total, pnl, wins, losses, avg_win, avg_loss, best, worst, costs = row
+        gross_win = avg_win * wins
+        gross_loss = abs(avg_loss * losses)
+        return {
+            "total_trades": int(total),
+            "total_pnl": round(float(pnl), 2),
+            "wins": int(wins),
+            "losses": int(losses),
+            "win_rate": round(wins / total * 100, 2) if total else 0.0,
+            "avg_win": round(float(avg_win), 2),
+            "avg_loss": round(float(avg_loss), 2),
+            "profit_factor": round(gross_win / gross_loss, 2) if gross_loss else 0.0,
+            "best_trade": round(float(best), 2),
+            "worst_trade": round(float(worst), 2),
+            "total_costs": round(float(costs), 2),
+        }

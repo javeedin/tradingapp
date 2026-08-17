@@ -1,0 +1,35 @@
+# --- Secrets: never commit ---
+.env
+.env.local
+*.session
+session_token.txt
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# --- Data / artifacts ---
+data/*.duckdb
+data/*.duckdb.wal
+data/cache/
+logs/
+*.log
+
+# --- Node ---
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
