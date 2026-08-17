@@ -65,8 +65,13 @@ export const api = {
 
   events: () => request<{ events: EngineEvent[] }>('/events'),
 
-  candles: (symbol: string, limit = 300) =>
-    request<CandleResponse>(`/candles/${encodeURIComponent(symbol)}?limit=${limit}`),
+  candles: (symbol: string, limit = 300, interval?: string) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (interval) params.set('interval', interval)
+    return request<CandleResponse>(
+      `/candles/${encodeURIComponent(symbol)}?${params.toString()}`,
+    )
+  },
 
   submitSession: (sessionToken: string) =>
     request<{ connected: boolean; message: string; backfill_error?: string }>('/session', {
