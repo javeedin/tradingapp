@@ -30,10 +30,12 @@ class StockScreener:
         'beta': 15,
     }
 
-    def __init__(self, breeze_client: Any, data_dir: str = '/tmp/screener'):
+    def __init__(self, breeze_client: Any, data_dir: str | None = None):
         self.client = breeze_client
+        if data_dir is None:
+            data_dir = str(Path.cwd() / 'data' / 'screener')
         self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(exist_ok=True)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def calculate_rsi(self, closes: list[float], period: int = 14) -> float:
         """Calculate RSI (Relative Strength Index)."""
