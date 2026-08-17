@@ -25,6 +25,7 @@ from app.broker.paper import PaperBroker
 from app.config import settings
 from app.data.breeze_client import BreezeClient, BreezeError, SessionExpiredError
 from app.data.store import MarketStore
+from app.engine.options import fetch_premium
 from app.engine.scanner import Scanner
 from app.models import (
     DEFAULT_INTRADAY_PRODUCT,
@@ -288,6 +289,14 @@ class LiveTrader:
         actions: list[dict[str, Any]] = []
 
         for symbol, position in self.broker.positions.items():
+            # Option legs have no stored candle series to enrich, so they take a
+            # separate path — see `_manage_option_position`.
+            if position.contract is not None:
+                action = self._manage_option_position(position, now)
+                if action:
+                    actions.append(action)
+                continue
+
             frame = self._context(symbol)
             if frame.empty:
                 continue
@@ -346,6 +355,53 @@ class LiveTrader:
                 )
 
         return actions
+
+    def _manage_option_position(
+        self, position: Any, now: datetime
+    ) -> dict[str, Any] | None:
+        """Reprice one option leg and exit it if it hit a level.
+
+        Options are managed on the quoted premium rather than on candles: there is
+        no stored series for a contract, and the underlying's ATR says nothing
+        useful about where a premium stop sits. That also rules out trailing and
+        averaging here — both need a volatility measure in the traded instrument.
+
+        Without this, an option position in paper mode would never exit: the
+        candle path skips it, so its stop and target would sit unenforced. Live
+        mode has the exchange holding the stop order, but not the target.
+        """
+        premium = fetch_premium(self.client, position.contract)
+        if premium is None:
+            return None
+
+        position.update_price(premium)
+
+        # A single quote is one price, not a bar, so high and low are both it —
+        # the premium may well have touched a level between polls and this cannot
+        # see that. Erring toward exiting late is the safe direction here.
+        exit_check = self.risk.check_exit(
+            position, high=premium, low=premium, now=now, intraday=self.intraday
+        )
+        if exit_check is None:
+            return None
+
+        reason, exit_price = exit_check
+        trade = self.broker.close_position(position.symbol, exit_price, reason, now)
+        if trade is None:
+            return None
+
+        self.risk.record_pnl(trade.net_pnl, now)
+        self.store.save_trade(trade, self.broker.mode)
+        self._log_event(
+            "exit",
+            f"{position.contract.label} closed ({reason.value}) net ₹{trade.net_pnl:,.2f}",
+        )
+        return {
+            "action": "exit",
+            "symbol": position.symbol,
+            "reason": reason.value,
+            "pnl": round(trade.net_pnl, 2),
+        }
 
     def _run_robotic(
         self, benchmark: pd.DataFrame | None, now: datetime, outcome: dict[str, Any]

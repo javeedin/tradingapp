@@ -371,7 +371,11 @@ class MarketStore:
             )
 
     def recent_orders(
-        self, limit: int = 200, mode: str | None = None, symbol: str | None = None
+        self,
+        limit: int = 200,
+        mode: str | None = None,
+        symbol: str | None = None,
+        product: str | None = None,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -382,6 +386,9 @@ class MarketStore:
         if symbol:
             clauses.append("symbol = ?")
             params.append(symbol.upper())
+        if product:
+            clauses.append("product = ?")
+            params.append(product.lower())
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)

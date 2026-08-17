@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
@@ -171,6 +171,129 @@ class ExitPolicy(str, Enum):
         }[self]
 
 
+class OptionRight(str, Enum):
+    """Which side of the contract. Breeze spells these out in full."""
+
+    CALL = "call"
+    PUT = "put"
+
+    @property
+    def short(self) -> str:
+        """CE / PE, the way strikes are quoted on screen."""
+        return "CE" if self is OptionRight.CALL else "PE"
+
+    @classmethod
+    def parse(cls, value: str) -> OptionRight:
+        normalised = str(value).strip().lower()
+        if normalised in {"call", "ce", "c"}:
+            return cls.CALL
+        if normalised in {"put", "pe", "p"}:
+            return cls.PUT
+        raise ValueError(f"Not an option right: {value!r}")
+
+
+# Contract sizes on NSE F&O, as of the 2025 revisions. A wrong lot size is not a
+# cosmetic error: Breeze rejects a quantity that is not a whole multiple of it,
+# and if it *were* accepted the position would be a different size than intended.
+# Anything unlisted falls back to 1 so the caller must pass an explicit lot size
+# rather than silently trading a wrong multiple.
+LOT_SIZES: dict[str, int] = {
+    "NIFTY": 75,
+    "CNXBAN": 35,  # BANKNIFTY
+    "BANKNIFTY": 35,
+    "FINNIFTY": 65,
+    "MIDCPNIFTY": 140,
+    "NIFTYNXT50": 25,
+}
+
+
+def lot_size_for(underlying: str) -> int:
+    return LOT_SIZES.get(underlying.strip().upper(), 1)
+
+
+@dataclass(frozen=True, slots=True)
+class OptionContract:
+    """One option series: underlying, expiry, strike, and right.
+
+    Options need a composite identity — "NIFTY" alone does not name a tradable
+    instrument — but the broker layer keys positions by a single string. `key` is
+    that string, and it is deliberately readable, because it is what shows up in
+    order history and in the positions table.
+    """
+
+    underlying: str
+    expiry: date
+    strike: float
+    right: OptionRight
+    lot_size: int = 1
+
+    @property
+    def key(self) -> str:
+        """Position/order key. Unique per series and legible in a table."""
+        return (
+            f"{self.underlying.upper()} "
+            f"{self.strike:g} {self.right.short} "
+            f"{self.expiry.strftime('%d%b%y').upper()}"
+        )
+
+    @property
+    def label(self) -> str:
+        return (
+            f"{self.underlying.upper()} {self.strike:g} {self.right.short} "
+            f"{self.expiry.strftime('%d %b')}"
+        )
+
+    def lots_to_quantity(self, lots: int) -> int:
+        return max(0, lots) * max(1, self.lot_size)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "underlying": self.underlying.upper(),
+            "expiry": self.expiry.isoformat(),
+            "strike": self.strike,
+            "right": self.right.value,
+            "right_short": self.right.short,
+            "lot_size": self.lot_size,
+            "key": self.key,
+            "label": self.label,
+        }
+
+    def breeze_params(self) -> dict[str, str]:
+        """Instrument fields every Breeze F&O order call needs."""
+        return {
+            "stock_code": self.underlying.upper(),
+            "expiry_date": self.expiry.strftime("%Y-%m-%dT06:00:00.000Z"),
+            "right": self.right.value,
+            "strike_price": f"{self.strike:g}",
+        }
+
+
+# Rough SPAN + exposure margin for a written option, as a percentage of the
+# underlying contract value. Writing an option collects a small premium but
+# blocks a large margin, so charging the premium notional — which is what the
+# equity path does — would let an account write positions it could never carry.
+# 15% is the usual ballpark for index options; the real number comes from the
+# exchange's SPAN file and moves with volatility, so treat this as a floor.
+SHORT_OPTION_MARGIN_PCT = 15.0
+
+
+def margin_for(
+    side: Side,
+    price: float,
+    quantity: int,
+    contract: OptionContract | None = None,
+) -> float:
+    """Cash a position blocks at entry.
+
+    Long anything and short equity block their notional (conservative for equity
+    intraday, where real margin is a fraction). A short option is the exception:
+    its risk is unbounded and its margin bears no relation to the premium.
+    """
+    if contract is not None and side is Side.SELL:
+        return contract.strike * quantity * SHORT_OPTION_MARGIN_PCT / 100
+    return abs(price) * quantity
+
+
 @dataclass(slots=True)
 class Candle:
     """One OHLCV bar."""
@@ -262,9 +385,12 @@ class Order:
     filled_price: float | None = None
     filled_quantity: int = 0
     message: str = ""
+    # Set only for F&O orders. `symbol` still carries the contract key so every
+    # existing code path that keys on symbol keeps working.
+    contract: OptionContract | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "order_id": self.order_id,
             "symbol": self.symbol,
             "side": self.side.value,
@@ -279,6 +405,9 @@ class Order:
             "filled_quantity": self.filled_quantity,
             "message": self.message,
         }
+        if self.contract is not None:
+            payload["contract"] = self.contract.to_dict()
+        return payload
 
 
 @dataclass(slots=True)
@@ -302,6 +431,8 @@ class Position:
     adds: int = 0
     initial_entry_price: float = 0.0
     total_cost: float = 0.0
+    # Set only for F&O positions; `symbol` is the contract key.
+    contract: OptionContract | None = None
 
     def __post_init__(self) -> None:
         if self.last_price == 0.0:
@@ -372,11 +503,11 @@ class Position:
     def reserved_margin(self) -> float:
         """Cash set aside at entry to carry this position.
 
-        Approximated as the full entry notional. Real intraday margin is a
-        fraction of that, so this is the conservative assumption — it
-        understates buying power rather than overstating it.
+        Approximated as the full entry notional for everything except a written
+        option, whose margin is driven by the underlying rather than the premium.
+        See `margin_for`.
         """
-        return self.entry_price * self.quantity
+        return margin_for(self.side, self.entry_price, self.quantity, self.contract)
 
     def update_price(self, price: float) -> None:
         self.last_price = price
@@ -391,7 +522,7 @@ class Position:
         return high >= self.target if self.side is Side.BUY else low <= self.target
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "symbol": self.symbol,
             "side": self.side.value,
             "quantity": self.quantity,
@@ -409,6 +540,9 @@ class Position:
             "initial_entry_price": round(self.initial_entry_price, 2),
             "drawdown_from_initial_pct": round(self.drawdown_from_initial_pct, 2),
         }
+        if self.contract is not None:
+            payload["contract"] = self.contract.to_dict()
+        return payload
 
 
 @dataclass(slots=True)
@@ -426,6 +560,7 @@ class Trade:
     costs: float
     exit_reason: ExitReason
     product: ProductType = DEFAULT_INTRADAY_PRODUCT
+    contract: OptionContract | None = None
 
     @property
     def net_pnl(self) -> float:
@@ -445,7 +580,7 @@ class Trade:
         return (self.exit_time - self.entry_time).total_seconds() / 60
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "symbol": self.symbol,
             "side": self.side.value,
             "quantity": self.quantity,
@@ -461,3 +596,6 @@ class Trade:
             "product": self.product.value,
             "holding_minutes": round(self.holding_period_minutes, 1),
         }
+        if self.contract is not None:
+            payload["contract"] = self.contract.to_dict()
+        return payload

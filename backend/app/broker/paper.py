@@ -22,12 +22,14 @@ from app.config import settings
 from app.models import (
     DEFAULT_INTRADAY_PRODUCT,
     ExitReason,
+    OptionContract,
     Order,
     OrderStatus,
     Position,
     ProductType,
     Side,
     Trade,
+    margin_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,9 +88,10 @@ class PaperBroker(Broker):
         target: float,
         product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
+        contract: OptionContract | None = None,
     ) -> Order:
         return self._open(
-            symbol, Side.BUY, quantity, price, stoploss, target, product, timestamp
+            symbol, Side.BUY, quantity, price, stoploss, target, product, timestamp, contract
         )
 
     def sell(
@@ -100,9 +103,10 @@ class PaperBroker(Broker):
         target: float,
         product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
+        contract: OptionContract | None = None,
     ) -> Order:
         return self._open(
-            symbol, Side.SELL, quantity, price, stoploss, target, product, timestamp
+            symbol, Side.SELL, quantity, price, stoploss, target, product, timestamp, contract
         )
 
     def _open(
@@ -115,6 +119,7 @@ class PaperBroker(Broker):
         target: float,
         product: ProductType,
         timestamp: datetime | None,
+        contract: OptionContract | None = None,
     ) -> Order:
         now = timestamp or datetime.now()
         order = Order(
@@ -127,6 +132,7 @@ class PaperBroker(Broker):
             order_id=f"PAPER-{uuid.uuid4().hex[:10].upper()}",
             stoploss=stoploss,
             target=target,
+            contract=contract,
         )
         self._orders.append(order)
 
@@ -145,10 +151,11 @@ class PaperBroker(Broker):
         notional = fill_price * quantity
         costs = self.brokerage(notional)
 
-        # Longs consume cash; shorts require margin, approximated here as the
-        # full notional. Real intraday margin is a fraction of this, so this is
-        # the conservative assumption.
-        required = notional + costs
+        # Longs consume their notional; shorts block margin. For equity that is
+        # approximated as the notional too (conservative), but a written option
+        # blocks margin against the underlying, which is far more than the
+        # premium it collects — see `margin_for`.
+        required = margin_for(side, fill_price, quantity, contract) + costs
         if required > self._cash:
             order.status = OrderStatus.REJECTED
             order.message = (
@@ -169,6 +176,7 @@ class PaperBroker(Broker):
             target=target,
             last_price=fill_price,
             order_id=order.order_id,
+            contract=contract,
         )
 
         order.status = OrderStatus.FILLED
@@ -212,6 +220,7 @@ class PaperBroker(Broker):
             order_id=f"PAPER-ADD-{uuid.uuid4().hex[:8].upper()}",
             stoploss=stoploss,
             target=target,
+            contract=position.contract if position else None,
         )
         self._orders.append(order)
 
@@ -225,7 +234,9 @@ class PaperBroker(Broker):
             return order
 
         fill_price = price + self.slippage(price) * position.side.sign
-        required = fill_price * quantity + self.brokerage(fill_price * quantity)
+        required = margin_for(
+            position.side, fill_price, quantity, position.contract
+        ) + self.brokerage(fill_price * quantity)
         if required > self._cash:
             order.status = OrderStatus.REJECTED
             order.message = (
@@ -287,10 +298,11 @@ class PaperBroker(Broker):
         if position.side is Side.BUY:
             self._cash += exit_notional - exit_costs
         else:
-            # Short: entry reserved the notional as margin; release it and
-            # settle the P&L.
+            # Short: release exactly what entry blocked, then settle the P&L.
+            # `reserved_margin` rather than the notional, so a written option
+            # gives back the margin it actually blocked.
             gross = (position.entry_price - fill_price) * position.quantity
-            self._cash += entry_notional + gross - exit_costs
+            self._cash += position.reserved_margin + gross - exit_costs
 
         order = Order(
             symbol=symbol,
@@ -304,6 +316,7 @@ class PaperBroker(Broker):
             filled_price=fill_price,
             filled_quantity=position.quantity,
             message=f"Exit: {reason.value}",
+            contract=position.contract,
         )
         self._orders.append(order)
 

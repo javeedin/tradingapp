@@ -26,6 +26,13 @@ from app.engine import monitor
 from app.engine.analysis import AnalysisError, analyse_symbol
 from app.engine.backtest import Backtester
 from app.engine.live import LiveTrader, is_market_open
+from app.engine.options import (
+    DEFAULT_STOP_PCT,
+    DEFAULT_TARGET_PCT,
+    build_contract,
+    fetch_premium,
+    plan_option_order,
+)
 from app.models import (
     DEFAULT_INTRADAY_PRODUCT,
     ExitPolicy,
@@ -33,6 +40,7 @@ from app.models import (
     OrderStatus,
     ProductType,
     Side,
+    lot_size_for,
 )
 from app.risk.manager import RiskManager
 from app.strategy.signals import SignalEngine
@@ -271,6 +279,25 @@ class PlaceOrderRequest(BaseModel):
     stoploss: float | None = Field(default=None, gt=0)
     target: float | None = Field(default=None, gt=0)
     lot_size: int = Field(default=1, ge=1)
+
+
+class OptionOrderRequest(BaseModel):
+    """An option order is a series plus a number of lots, never a share count."""
+
+    underlying: str = Field(..., min_length=1)
+    expiry: str = Field(..., description="ISO date of the contract expiry")
+    strike: float = Field(..., gt=0)
+    right: str = Field(..., description="call | put | ce | pe")
+    side: str = Field(default="buy", pattern="^([bB][uU][yY]|[sS][eE][lL][lL])$")
+    lots: int = Field(default=1, ge=1, le=1000)
+    # Quantity is lots × lot size, so the lot size has to be right. Sent from the
+    # chain response when the UI has it, resolved from LOT_SIZES otherwise.
+    lot_size: int | None = Field(default=None, ge=1, le=10000)
+    premium: float | None = Field(
+        default=None, gt=0, description="None means quote it live"
+    )
+    stop_pct: float = Field(default=DEFAULT_STOP_PCT, gt=0, le=100)
+    target_pct: float = Field(default=DEFAULT_TARGET_PCT, gt=0, le=1000)
 
 
 class ClosePositionRequest(BaseModel):
@@ -621,6 +648,9 @@ async def option_chain(
         "spot": round(spot, 2) if spot else None,
         "rows": rows,
         "count": len(rows),
+        # Sent with the chain so the order dialog can price a lot without a
+        # second round trip, and so a wrong lot size is visible on screen.
+        "lot_size": lot_size_for(symbol),
     }
 
 
@@ -1123,6 +1153,196 @@ async def preview_order(
             account, qty, entry, brokerage_pct=settings.brokerage_pct
         ),
         "account": account.to_dict(),
+    }
+
+
+# ----------------------------------------------------------------------
+# Option orders
+# ----------------------------------------------------------------------
+async def build_option_plan(request: OptionOrderRequest) -> tuple[Any, dict[str, Any], float]:
+    """Resolve the contract, the premium, and the reviewed plan.
+
+    Shared by the preview and the placement path so the numbers the user approved
+    are computed by the same code that sends the order.
+    """
+    trader = get_trader()
+
+    try:
+        contract = build_contract(
+            underlying=request.underlying,
+            expiry=request.expiry,
+            strike=request.strike,
+            right=request.right,
+            lot_size=request.lot_size,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    premium = request.premium
+    if premium is None:
+        premium = await asyncio.to_thread(fetch_premium, trader.client, contract)
+    if not premium or premium <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No premium available for {contract.label}. Load the option chain "
+                "and place the order from a strike that is actually quoting, or "
+                "supply the premium explicitly."
+            ),
+        )
+
+    side = Side.BUY if request.side.strip().lower() == "buy" else Side.SELL
+    account = await asyncio.to_thread(read_funds)
+
+    plan = plan_option_order(
+        contract=contract,
+        premium=premium,
+        side=side,
+        lots=request.lots,
+        funds=account,
+        stop_pct=request.stop_pct,
+        target_pct=request.target_pct,
+        brokerage_pct=settings.brokerage_pct,
+    )
+    plan["mode"] = trader.broker.mode
+    plan["account"] = account.to_dict()
+    return contract, plan, premium
+
+
+@app.post("/api/options/preview")
+async def preview_option_order(request: OptionOrderRequest) -> dict[str, Any]:
+    """Cost, margin, levels, and warnings for an option order, without sending it."""
+    _, plan, _ = await build_option_plan(request)
+    return plan
+
+
+@app.post("/api/options/orders")
+async def place_option_order(request: OptionOrderRequest) -> dict[str, Any]:
+    """Place an option order with a premium-based stop and target.
+
+    Routed through the same broker as equities, so it is a simulated fill in paper
+    mode and a real NFO order in live mode. The position is keyed by contract, not
+    by underlying, so two strikes on the same index are two positions.
+    """
+    trader = get_trader()
+    contract, plan, premium = await build_option_plan(request)
+    side = Side.BUY if request.side.strip().lower() == "buy" else Side.SELL
+    key = contract.key
+
+    if trader.broker.has_position(key):
+        raise HTTPException(status_code=409, detail=f"Position already open in {key}")
+
+    if plan["days_to_expiry"] < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{contract.expiry:%d %b %Y} has expired — not a live contract.",
+        )
+
+    quantity = plan["quantity"]
+    stoploss = plan["stoploss"]
+    target = plan["target"]
+
+    # Recorded before the broker is called so a funds rejection is not a silent
+    # gap in the history — the same reason the equity path does it.
+    if not plan["affordable"]:
+        message = (
+            f"Insufficient funds: {request.lots} lot(s) of {contract.label} needs about "
+            f"₹{plan['required']:,.2f} but only ₹{plan['available']:,.2f} is available — "
+            f"short by ₹{plan['shortfall']:,.2f}. "
+            f"The largest affordable size is {plan['max_affordable_lots']} lot(s)."
+        )
+        trader.store.save_order(
+            Order(
+                symbol=key,
+                side=side,
+                quantity=quantity,
+                price=premium,
+                product=ProductType.OPTIONS,
+                timestamp=datetime.now(),
+                status=OrderStatus.REJECTED,
+                stoploss=stoploss,
+                target=target,
+                message=message,
+                contract=contract,
+            ),
+            origin="manual",
+            mode=trader.broker.mode,
+        )
+        raise HTTPException(status_code=400, detail=message)
+
+    place = trader.broker.buy if side is Side.BUY else trader.broker.sell
+    order = await asyncio.to_thread(
+        place,
+        symbol=key,
+        quantity=quantity,
+        price=premium,
+        stoploss=stoploss,
+        target=target,
+        product=ProductType.OPTIONS,
+        contract=contract,
+    )
+
+    trader.store.save_order(order, origin="manual", mode=trader.broker.mode)
+
+    if order.status is OrderStatus.REJECTED:
+        raise HTTPException(status_code=400, detail=order.message)
+
+    trader._log_event(
+        "option_order",
+        f"{side.value.upper()} {request.lots} lot(s) {contract.label} "
+        f"x{quantity} @ ₹{premium:,.2f} (stop ₹{stoploss:,.2f}, target ₹{target:,.2f})",
+    )
+    await broadcast({"type": "order", "data": order.to_dict()})
+
+    return {"order": order.to_dict(), "plan": plan, "mode": trader.broker.mode}
+
+
+@app.get("/api/options/positions")
+async def option_positions() -> dict[str, Any]:
+    """Open option positions with refreshed premiums.
+
+    Premiums are re-quoted here rather than relying on the equity ticker, which
+    only follows the watchlist and would leave option P&L frozen at entry.
+    """
+    trader = get_trader()
+    positions = [p for p in trader.broker.positions.values() if p.contract is not None]
+
+    quoted = 0
+    if trader.is_connected:
+        for position in positions:
+            price = await asyncio.to_thread(
+                fetch_premium, trader.client, position.contract
+            )
+            if price:
+                position.update_price(price)
+                quoted += 1
+
+    return {
+        "positions": [p.to_dict() for p in positions],
+        "count": len(positions),
+        "repriced": quoted,
+        "mode": trader.broker.mode,
+        "note": (
+            "Premiums are re-quoted on each load. Without a Breeze session they "
+            "stay at the entry price, so P&L will read zero."
+        ),
+    }
+
+
+@app.get("/api/options/orders")
+async def option_order_history(limit: int = 200) -> dict[str, Any]:
+    """Option orders only — the equity history is a separate view."""
+    trader = get_trader()
+    return {
+        "orders": trader.store.recent_orders(
+            limit=limit, mode=trader.broker.mode, product=ProductType.OPTIONS.value
+        ),
+        "session_orders": [
+            o.to_dict()
+            for o in trader.broker.orders
+            if o.product is ProductType.OPTIONS
+        ],
+        "mode": trader.broker.mode,
     }
 
 

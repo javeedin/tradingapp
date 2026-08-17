@@ -28,6 +28,7 @@ from app.data.breeze_client import BreezeClient, BreezeError
 from app.models import (
     DEFAULT_INTRADAY_PRODUCT,
     ExitReason,
+    OptionContract,
     Order,
     OrderStatus,
     Position,
@@ -42,6 +43,9 @@ logger = logging.getLogger(__name__)
 # order explicitly, priced through the touch by this fraction, makes the
 # behaviour predictable instead of relying on that conversion.
 MARKETABLE_LIMIT_BUFFER_PCT = 0.30
+
+# Derivatives trade on a different exchange segment from cash.
+FNO_EXCHANGE_CODE = "NFO"
 
 
 class BreezeBroker(Broker):
@@ -119,9 +123,10 @@ class BreezeBroker(Broker):
         target: float,
         product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
+        contract: OptionContract | None = None,
     ) -> Order:
         return self._open(
-            symbol, Side.BUY, quantity, price, stoploss, target, product, timestamp
+            symbol, Side.BUY, quantity, price, stoploss, target, product, timestamp, contract
         )
 
     def sell(
@@ -133,10 +138,29 @@ class BreezeBroker(Broker):
         target: float,
         product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
+        contract: OptionContract | None = None,
     ) -> Order:
         return self._open(
-            symbol, Side.SELL, quantity, price, stoploss, target, product, timestamp
+            symbol, Side.SELL, quantity, price, stoploss, target, product, timestamp, contract
         )
+
+    def _instrument_params(
+        self, symbol: str, contract: OptionContract | None
+    ) -> dict[str, str]:
+        """Which instrument an order names, and on which exchange segment.
+
+        Equity orders send the stock code against the cash segment. F&O orders
+        send the *underlying's* code against NFO plus expiry, right, and strike —
+        the contract key used to track the position locally is not a code Breeze
+        recognises, so it must never be sent as `stock_code`.
+        """
+        if contract is None:
+            return {"stock_code": symbol, "exchange_code": self.exchange_code}
+        return {**contract.breeze_params(), "exchange_code": FNO_EXCHANGE_CODE}
+
+    def _exchange_for(self, contract: OptionContract | None) -> str:
+        """Segment an order id belongs to — required by detail/cancel/modify."""
+        return self.exchange_code if contract is None else FNO_EXCHANGE_CODE
 
     def _open(
         self,
@@ -148,6 +172,7 @@ class BreezeBroker(Broker):
         target: float,
         product: ProductType,
         timestamp: datetime | None,
+        contract: OptionContract | None = None,
     ) -> Order:
         now = timestamp or datetime.now()
         order = Order(
@@ -159,6 +184,7 @@ class BreezeBroker(Broker):
             timestamp=now,
             stoploss=stoploss,
             target=target,
+            contract=contract,
         )
         self._orders.append(order)
 
@@ -186,8 +212,7 @@ class BreezeBroker(Broker):
 
         try:
             response = self.client.place_order(
-                stock_code=symbol,
-                exchange_code=self.exchange_code,
+                **self._instrument_params(symbol, contract),
                 product=product.value,
                 action=side.value,
                 order_type="limit",
@@ -211,7 +236,9 @@ class BreezeBroker(Broker):
         order.order_id = order_id
         order.status = OrderStatus.PENDING
 
-        fill_price = self._resolve_fill_price(order_id, fallback=limit_price)
+        fill_price = self._resolve_fill_price(
+            order_id, fallback=limit_price, contract=contract
+        )
         order.status = OrderStatus.FILLED
         order.filled_price = fill_price
         order.filled_quantity = quantity
@@ -227,6 +254,7 @@ class BreezeBroker(Broker):
             target=target,
             last_price=fill_price,
             order_id=order_id,
+            contract=contract,
         )
         self._positions[symbol] = position
 
@@ -255,10 +283,15 @@ class BreezeBroker(Broker):
         buffer = price * MARKETABLE_LIMIT_BUFFER_PCT / 100
         return round(price + buffer * side.sign, 2)
 
-    def _resolve_fill_price(self, order_id: str, fallback: float) -> float:
+    def _resolve_fill_price(
+        self,
+        order_id: str,
+        fallback: float,
+        contract: OptionContract | None = None,
+    ) -> float:
         """Read the actual average fill price, falling back to the limit price."""
         try:
-            detail = self.client.get_order_detail(order_id, self.exchange_code)
+            detail = self.client.get_order_detail(order_id, self._exchange_for(contract))
         except BreezeError as exc:
             logger.warning("Could not read fill price for %s: %s", order_id, exc)
             return fallback
@@ -300,6 +333,7 @@ class BreezeBroker(Broker):
             timestamp=now,
             stoploss=stoploss,
             target=target,
+            contract=position.contract if position else None,
         )
         self._orders.append(order)
 
@@ -311,8 +345,7 @@ class BreezeBroker(Broker):
         limit_price = self._marketable_limit(price, position.side)
         try:
             response = self.client.place_order(
-                stock_code=symbol,
-                exchange_code=self.exchange_code,
+                **self._instrument_params(symbol, position.contract),
                 product=position.product.value,
                 action=position.side.value,
                 order_type="limit",
@@ -329,7 +362,9 @@ class BreezeBroker(Broker):
 
         order_id = str(response.get("order_id") or "")
         fill_price = (
-            self._resolve_fill_price(order_id, fallback=limit_price)
+            self._resolve_fill_price(
+                order_id, fallback=limit_price, contract=position.contract
+            )
             if order_id
             else limit_price
         )
@@ -377,8 +412,7 @@ class BreezeBroker(Broker):
 
         try:
             response = self.client.place_order(
-                stock_code=position.symbol,
-                exchange_code=self.exchange_code,
+                **self._instrument_params(position.symbol, position.contract),
                 product=position.product.value,
                 action=exit_side.value,
                 order_type="stoploss",
@@ -417,7 +451,7 @@ class BreezeBroker(Broker):
         try:
             self.client.modify_order(
                 order_id=stop_id,
-                exchange_code=self.exchange_code,
+                exchange_code=self._exchange_for(position.contract),
                 order_type="stoploss",
                 stoploss=f"{new_stop:.2f}",
                 price=f"{self._marketable_limit(new_stop, exit_side):.2f}",
@@ -436,8 +470,11 @@ class BreezeBroker(Broker):
         stop_id = self._stop_order_ids.pop(symbol, None)
         if not stop_id:
             return
+        position = self._positions.get(symbol)
         try:
-            self.client.cancel_order(stop_id, self.exchange_code)
+            self.client.cancel_order(
+                stop_id, self._exchange_for(position.contract if position else None)
+            )
         except BreezeError as exc:
             # Already-filled stops cannot be cancelled; that is expected.
             logger.info("Stop cancel for %s returned: %s", symbol, exc)
@@ -465,8 +502,7 @@ class BreezeBroker(Broker):
 
         try:
             response = self.client.place_order(
-                stock_code=symbol,
-                exchange_code=self.exchange_code,
+                **self._instrument_params(symbol, position.contract),
                 product=position.product.value,
                 action=exit_side.value,
                 order_type="limit",
@@ -481,7 +517,11 @@ class BreezeBroker(Broker):
 
         order_id = str(response.get("order_id") or "")
         fill_price = (
-            self._resolve_fill_price(order_id, fallback=limit_price) if order_id else limit_price
+            self._resolve_fill_price(
+                order_id, fallback=limit_price, contract=position.contract
+            )
+            if order_id
+            else limit_price
         )
 
         costs = self.brokerage(position.entry_price * position.quantity) + self.brokerage(
@@ -501,6 +541,7 @@ class BreezeBroker(Broker):
                 filled_price=fill_price,
                 filled_quantity=position.quantity,
                 message=f"Exit: {reason.value}",
+                contract=position.contract,
             )
         )
 
@@ -530,6 +571,12 @@ class BreezeBroker(Broker):
         }
 
         for symbol in list(self._positions):
+            # F&O positions are keyed locally by contract, but Breeze reports
+            # them under the underlying's code with expiry/strike/right in
+            # separate fields. Matching on `stock_code` alone would find no match
+            # and silently drop a live option position, so leave those alone.
+            if self._positions[symbol].contract is not None:
+                continue
             if symbol not in remote_symbols:
                 logger.warning(
                     "Position %s is closed at the broker but open locally — "

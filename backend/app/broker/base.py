@@ -19,6 +19,7 @@ from app.config import settings
 from app.models import (
     DEFAULT_INTRADAY_PRODUCT,
     ExitReason,
+    OptionContract,
     Order,
     Position,
     ProductType,
@@ -72,8 +73,13 @@ class Broker(ABC):
         target: float,
         product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
+        contract: OptionContract | None = None,
     ) -> Order:
-        """Open a long position with a protective stop."""
+        """Open a long position with a protective stop.
+
+        `contract` names the F&O series when the product is options or futures.
+        Equity orders leave it None, and `symbol` is the position key either way.
+        """
 
     @abstractmethod
     def sell(
@@ -85,6 +91,7 @@ class Broker(ABC):
         target: float,
         product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
+        contract: OptionContract | None = None,
     ) -> Order:
         """Open a short position with a protective stop."""
 
@@ -211,6 +218,7 @@ class Broker(ABC):
             costs=costs,
             exit_reason=reason,
             product=position.product,
+            contract=position.contract,
         )
         self._trades.append(trade)
 
