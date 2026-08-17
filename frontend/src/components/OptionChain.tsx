@@ -61,15 +61,22 @@ export default function OptionChain() {
   const [error, setError] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
 
+  // Refetched per underlying: only NIFTY still has weekly contracts, so the
+  // candidate list differs by symbol.
   useEffect(() => {
+    let cancelled = false
     api
-      .expiries()
+      .expiries(symbol)
       .then((data) => {
+        if (cancelled) return
         setExpiries(data.expiries)
         if (data.expiries.length) setExpiry(data.expiries[0].date)
       })
-      .catch((err: Error) => setError(err.message))
-  }, [])
+      .catch((err: Error) => !cancelled && setError(err.message))
+    return () => {
+      cancelled = true
+    }
+  }, [symbol])
 
   const load = async () => {
     setBusy(true)
@@ -146,9 +153,10 @@ export default function OptionChain() {
           </div>
 
           <div className="notice info" style={{ marginTop: 12, marginBottom: 0 }}>
-            Expiry dates are <strong>candidates</strong> — NSE has changed index expiry
-            weekdays before, and holidays shift one earlier. If Breeze rejects a date, it is
-            not a live contract; pick another.
+            Expiries are <strong>Tuesdays</strong> since NSE moved the F&O expiry day on
+            28&nbsp;Aug&nbsp;2025, and <strong>weeklies exist for NIFTY only</strong> —
+            every other index is monthly. Holidays shift an expiry earlier, and Breeze
+            rejects anything that is not a live contract.
           </div>
 
           {error && (

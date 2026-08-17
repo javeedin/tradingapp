@@ -260,3 +260,28 @@ def test_order_modes_are_isolated(store):
 
 def test_order_stats_on_empty_table(store):
     assert store.order_stats()["total"] == 0
+
+
+def test_recent_trades_include_computed_fields(store):
+    """Regression: the UI showed "NaN%" and "NaNm" for stored trades.
+
+    return_pct and holding_minutes are properties on the Trade dataclass, so a
+    row read back out of the table lacked them entirely. They are derived in SQL
+    now so a stored row and a live Trade serialise to the same shape.
+    """
+    store.save_trade(make_trade(500.0), mode="paper")
+    row = store.recent_trades(mode="paper")[0]
+
+    assert "return_pct" in row
+    assert "holding_minutes" in row
+    # 10 shares at 1000 = 10,000 invested; net 495 after 5 in costs.
+    assert row["return_pct"] == pytest.approx(495 / 10_000 * 100, rel=0.01)
+    assert row["holding_minutes"] == pytest.approx(60)
+
+
+def test_computed_return_survives_a_zero_cost_basis(store):
+    """A malformed row must not divide by zero and take the whole view down."""
+    trade = make_trade(100.0)
+    trade.entry_price = 0.0
+    store.save_trade(trade, mode="paper")
+    assert store.recent_trades(mode="paper")[0]["return_pct"] == 0

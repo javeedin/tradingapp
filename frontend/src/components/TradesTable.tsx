@@ -13,15 +13,40 @@ const REASON_TONE: Record<string, string> = {
 export default function TradesTable({
   trades,
   title = 'Trade History',
+  onRefresh,
+  loading,
 }: {
   trades: Trade[]
   title?: string
+  onRefresh?: () => void
+  loading?: boolean
 }) {
+  const netPnl = trades.reduce((sum, t) => sum + t.net_pnl, 0)
+  const wins = trades.filter((t) => t.net_pnl > 0).length
+
   return (
     <div className="panel">
       <div className="panel-head">
         <span>{title}</span>
         <span className="badge off">{trades.length}</span>
+        {trades.length > 0 && (
+          <>
+            <span className={`badge ${netPnl >= 0 ? 'ok' : 'live'}`}>
+              {formatCurrency(netPnl)}
+            </span>
+            <span className="dim" style={{ fontWeight: 400, fontSize: 11 }}>
+              {wins}W / {trades.length - wins}L
+            </span>
+          </>
+        )}
+        {onRefresh && (
+          <>
+            <div className="spacer" />
+            <button onClick={onRefresh} disabled={loading} style={{ padding: '4px 10px' }}>
+              {loading ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </>
+        )}
       </div>
       <div className="panel-body flush">
         {trades.length === 0 ? (

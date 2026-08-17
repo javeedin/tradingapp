@@ -451,7 +451,25 @@ class MarketStore:
             )
 
     def recent_trades(self, limit: int = 100, mode: str | None = None) -> list[dict[str, Any]]:
-        query = "SELECT * FROM trades"
+        """Stored trades, newest first.
+
+        `return_pct` and `holding_minutes` are computed here rather than stored.
+        They are properties on the `Trade` dataclass, so a row read straight back
+        out of the table lacks them — which surfaced in the UI as "NaN%" and
+        "NaNm". Deriving them in SQL keeps a stored row and a live `Trade`
+        serialising to the same shape.
+        """
+        query = """
+            SELECT
+                *,
+                CASE
+                    WHEN entry_price * quantity <> 0
+                    THEN net_pnl / (entry_price * quantity) * 100
+                    ELSE 0
+                END AS return_pct,
+                date_diff('minute', entry_time, exit_time) AS holding_minutes
+            FROM trades
+        """
         params: list[Any] = []
         if mode:
             query += " WHERE mode = ?"

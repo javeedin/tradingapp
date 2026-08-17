@@ -129,7 +129,10 @@ export const api = {
     )
   },
 
-  expiries: () => request<{ expiries: ExpiryCandidate[]; note: string }>('/expiries'),
+  expiries: (symbol?: string) =>
+    request<{ expiries: ExpiryCandidate[]; note: string; has_weeklies: boolean | null }>(
+      `/expiries${symbol ? `?symbol=${encodeURIComponent(symbol.toUpperCase())}` : ''}`,
+    ),
 
   optionChain: (symbol: string, expiry?: string) => {
     const params = new URLSearchParams({ symbol: symbol.toUpperCase() })

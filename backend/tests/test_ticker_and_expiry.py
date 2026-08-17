@@ -9,6 +9,7 @@ import pytest
 from app.data.expiry import (
     WEEKLY_EXPIRY_WEEKDAY,
     expiry_candidates,
+    has_weekly_expiries,
     monthly_expiry,
     to_breeze_expiry,
     upcoming_monthly_expiries,
@@ -161,9 +162,46 @@ def test_status_reports_the_feed_state(ticker):
 # ----------------------------------------------------------------------
 # Expiry helpers
 # ----------------------------------------------------------------------
+def test_expiry_weekday_is_tuesday():
+    """NSE moved all F&O expiry from Thursday to Tuesday on 28 Aug 2025.
+
+    Generating Thursdays produced dates Breeze rejected with "No Data Found",
+    which looked like a broken option chain rather than a stale constant.
+    """
+    assert WEEKLY_EXPIRY_WEEKDAY == 1  # Monday = 0
+
+
 def test_weekly_expiries_land_on_the_expiry_weekday():
     for d in upcoming_weekly_expiries(5, today=date(2026, 8, 17)):
         assert d.weekday() == WEEKLY_EXPIRY_WEEKDAY
+
+
+def test_only_nifty_has_weekly_contracts():
+    """Weeklies were restricted to one benchmark index per exchange."""
+    assert has_weekly_expiries("NIFTY")
+    assert not has_weekly_expiries("CNXBAN")
+    assert not has_weekly_expiries("RELIND")
+    assert not has_weekly_expiries(None)
+
+
+def test_monthly_only_underlying_gets_no_weekly_candidates():
+    """Offering a weekly for an index without them yields dates Breeze rejects."""
+    candidates = expiry_candidates(today=date(2026, 8, 17), symbol="CNXBAN")
+    assert candidates
+    assert all(c["kind"] == "monthly" for c in candidates)
+
+
+def test_nifty_gets_both_weekly_and_monthly_candidates():
+    kinds = {
+        c["kind"] for c in expiry_candidates(today=date(2026, 8, 17), symbol="NIFTY")
+    }
+    assert kinds == {"weekly", "monthly"}
+
+
+def test_candidate_label_names_the_weekday():
+    """The expiry day changed once; showing it makes a stale build obvious."""
+    label = expiry_candidates(today=date(2026, 8, 17), symbol="NIFTY")[0]["label"]
+    assert "Tue" in label
 
 
 def test_weekly_expiries_are_ordered_and_future():

@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from app.broker.paper import PaperBroker
 from app.config import REPO_ROOT, settings
 from app.data.breeze_client import BreezeClient, BreezeError, login_url
-from app.data.expiry import expiry_candidates, to_breeze_expiry
+from app.data.expiry import expiry_candidates, has_weekly_expiries, to_breeze_expiry
 from app.data.funds import Funds, affordability, normalise_funds, paper_funds
 from app.data.store import MarketStore
 from app.data.ticker import LiveTicker
@@ -490,14 +490,17 @@ async def analyse(
 # Options
 # ----------------------------------------------------------------------
 @app.get("/api/expiries")
-async def expiries() -> dict[str, Any]:
+async def expiries(symbol: str | None = None) -> dict[str, Any]:
     """Candidate expiry dates for the option chain picker."""
     return {
-        "expiries": expiry_candidates(),
+        "symbol": symbol,
+        "has_weeklies": has_weekly_expiries(symbol) if symbol else None,
+        "expiries": expiry_candidates(symbol=symbol),
         "note": (
-            "Candidates only — NSE has changed index expiry weekdays before, and "
-            "holidays shift an expiry earlier. Breeze rejects a date that is not a "
-            "real contract."
+            "Candidates only. NSE moved all F&O expiry from Thursday to Tuesday on "
+            "28 Aug 2025, and weeklies now exist for NIFTY alone — every other index "
+            "is monthly. Holidays shift an expiry earlier, and Breeze rejects a date "
+            "that is not a real contract."
         ),
     }
 
@@ -518,7 +521,7 @@ async def option_chain(
         raise HTTPException(status_code=401, detail="Establish a Breeze session first")
 
     if not expiry:
-        candidates = expiry_candidates()
+        candidates = expiry_candidates(symbol=symbol.strip().upper())
         if not candidates:
             raise HTTPException(status_code=400, detail="No expiry supplied or derivable")
         expiry = candidates[0]["date"]

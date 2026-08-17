@@ -377,7 +377,9 @@ export default function App() {
 
       {tab === 'backtest' && <BacktestPanel symbols={status?.symbols ?? []} />}
 
-      {tab === 'history' && <TradesTable trades={trades} />}
+      {tab === 'history' && (
+        <TradesTable trades={trades} onRefresh={refresh} />
+      )}
     </div>
   )
 }

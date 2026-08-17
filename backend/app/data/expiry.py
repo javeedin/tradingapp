@@ -1,10 +1,19 @@
 """Option expiry date helpers.
 
 These generate *candidate* expiries to offer in the UI — they are not an
-authority. NSE has changed index expiry weekdays more than once (and moved some
-indices to monthly-only), and trading holidays shift an expiry to the previous
-session. Breeze rejects a date that is not a real contract, so the candidate list
-is a convenience for picking, and the API's response is the actual check.
+authority. Trading holidays shift an expiry to the previous session, and NSE has
+changed the rules twice in recent memory:
+
+* **Expiry weekday moved from Thursday to Tuesday**, effective 28 August 2025,
+  for NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50 and single-stock
+  derivatives.
+* **Weekly expiries were restricted to one benchmark index per exchange.** On
+  NSE that is NIFTY; BANKNIFTY weeklies were discontinued in November 2024, so
+  it and the other indices are monthly/quarterly only.
+
+Because these rules move, `WEEKLY_EXPIRY_INDICES` is the single place to correct
+if NSE changes them again, and Breeze's acceptance of a date remains the real
+check.
 """
 
 from __future__ import annotations
@@ -12,8 +21,17 @@ from __future__ import annotations
 import calendar
 from datetime import date, datetime, timedelta
 
-# Weekday NSE currently uses for index weekly expiries (Monday = 0).
-WEEKLY_EXPIRY_WEEKDAY = 3  # Thursday
+# Weekday NSE uses for derivative expiries (Monday = 0). Tuesday since 2025-08-28.
+WEEKLY_EXPIRY_WEEKDAY = 1  # Tuesday
+
+# Underlyings that still have weekly contracts. Everything else is monthly only.
+# Breeze codes; NIFTY is the only NSE index with weeklies.
+WEEKLY_EXPIRY_INDICES = frozenset({"NIFTY"})
+
+
+def has_weekly_expiries(symbol: str | None) -> bool:
+    """Whether `symbol` has weekly contracts, or monthly only."""
+    return bool(symbol) and symbol.strip().upper() in WEEKLY_EXPIRY_INDICES
 
 
 def _next_weekday(start: date, weekday: int) -> date:
@@ -54,18 +72,26 @@ def upcoming_monthly_expiries(count: int = 3, today: date | None = None) -> list
     return results
 
 
-def expiry_candidates(today: date | None = None) -> list[dict[str, str]]:
-    """Weekly and monthly candidates, de-duplicated and sorted.
+def expiry_candidates(
+    today: date | None = None, symbol: str | None = None
+) -> list[dict[str, str]]:
+    """Candidate expiries for `symbol`, de-duplicated and sorted.
 
-    A weekly that coincides with the month's last expiry is the monthly
-    contract; labelling it "monthly" is the more useful of the two.
+    Only underlyings in `WEEKLY_EXPIRY_INDICES` get weekly candidates. Offering
+    weeklies for an index that no longer has them just produces dates Breeze
+    rejects with "No Data Found". A weekly coinciding with the month's last
+    expiry *is* the monthly contract, so it is labelled that way.
+
+    The weekday is included in the label because the expiry day changed in 2025
+    — seeing "Tue" makes an out-of-date build obvious at a glance.
     """
     today = today or date.today()
     monthlies = set(upcoming_monthly_expiries(3, today))
 
     seen: dict[date, str] = {}
-    for d in upcoming_weekly_expiries(6, today):
-        seen[d] = "monthly" if d in monthlies else "weekly"
+    if symbol is None or has_weekly_expiries(symbol):
+        for d in upcoming_weekly_expiries(6, today):
+            seen[d] = "monthly" if d in monthlies else "weekly"
     for d in monthlies:
         seen.setdefault(d, "monthly")
 
@@ -74,7 +100,7 @@ def expiry_candidates(today: date | None = None) -> list[dict[str, str]]:
             "date": d.isoformat(),
             "breeze_format": to_breeze_expiry(d),
             "kind": kind,
-            "label": f"{d.strftime('%d %b %Y')} ({kind})",
+            "label": f"{d.strftime('%a %d %b %Y')} ({kind})",
             "days_away": (d - today).days,
         }
         for d, kind in sorted(seen.items())
