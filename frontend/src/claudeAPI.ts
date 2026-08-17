@@ -59,7 +59,7 @@ export async function analyzeOptionChain(
   const data = await response.json()
   const content = data.content[0]?.text || ''
 
-  return parseClaudeResponse(content)
+  return parseClaudeResponse(content, JSON.stringify(data, null, 2))
 }
 
 function buildAnalysisPrompt(chain: OptionChainResponse): string {
@@ -123,7 +123,7 @@ Format your response as JSON only with this structure:
 `
 }
 
-function parseClaudeResponse(content: string): ClaudeAnalysisResult {
+function parseClaudeResponse(content: string, fullResponse: string = ''): ClaudeAnalysisResult {
   try {
     const jsonMatch = content.match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
@@ -147,6 +147,7 @@ function parseClaudeResponse(content: string): ClaudeAnalysisResult {
     }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
-    throw new Error(`Failed to parse Claude response:\n\n${errorMsg}\n\nFull response:\n${content}`)
+    const responseToShow = fullResponse || content || 'No response received'
+    throw new Error(`Failed to parse Claude response:\n\n${errorMsg}\n\nFull response:\n${responseToShow}`)
   }
 }
