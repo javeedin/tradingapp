@@ -35,7 +35,10 @@ export async function analyzeOptionChain(
     },
     body: JSON.stringify({
       model: 'claude-sonnet-5',
-      max_tokens: 1024,
+      max_tokens: 4096,
+      thinking: {
+        type: 'disabled',
+      },
       messages: [
         {
           role: 'user',
