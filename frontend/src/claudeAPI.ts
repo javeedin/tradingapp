@@ -31,7 +31,6 @@ export async function analyzeOptionChain(
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
-      'anthropic-version': '2024-01-15',
     },
     body: JSON.stringify({
       model: 'claude-sonnet-5',
