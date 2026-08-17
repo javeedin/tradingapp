@@ -121,7 +121,7 @@ function parseClaudeResponse(content: string): ClaudeAnalysisResult {
   try {
     const jsonMatch = content.match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
-      throw new Error('No JSON found in response')
+      throw new Error(`No JSON found in response. Full response:\n\n${content}`)
     }
 
     const parsed = JSON.parse(jsonMatch[0])
@@ -140,6 +140,7 @@ function parseClaudeResponse(content: string): ClaudeAnalysisResult {
       riskLevel: parsed.riskLevel || 'medium',
     }
   } catch (err) {
-    throw new Error(`Failed to parse Claude response: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    throw new Error(`Failed to parse Claude response:\n\n${errorMsg}\n\nFull response:\n${content}`)
   }
 }
