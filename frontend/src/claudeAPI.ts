@@ -1,4 +1,4 @@
-import type { OptionChainResponse, OptionRow } from './types'
+import type { OptionChainResponse } from './types'
 
 export interface ClaudeAnalysisResult {
   marketMovement: string
@@ -34,7 +34,7 @@ export async function analyzeOptionChain(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-5',
       max_tokens: 1024,
       messages: [
         {

@@ -331,7 +331,7 @@ export default function OptionChain({ mode }: { mode: string }) {
                   disabled={analyzingClaude}
                   title="Use Claude to analyze market movement and suggest strikes"
                 >
-                  {analyzingClaude ? 'Analyzing…' : '🤖 Claude AI'}
+                  {analyzingClaude ? 'Analyzing…' : '🤖 Analysis'}
                 </button>
               </>
             )}

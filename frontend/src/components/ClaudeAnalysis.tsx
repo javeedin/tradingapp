@@ -22,7 +22,7 @@ export default function ClaudeAnalysis({ analysis, onClose, onSelectStrike }: Cl
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 700 }}>
         <div className="modal-head">
-          <span>Claude Market Analysis</span>
+          <span>Analysis</span>
           <button className="close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body" style={{ maxHeight: 600, overflowY: 'auto' }}>
