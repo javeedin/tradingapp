@@ -1,18 +1,40 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, formatCurrency, formatNumber } from './api'
+import AnalysePanel from './components/AnalysePanel'
 import BacktestPanel from './components/BacktestPanel'
 import EventLog from './components/EventLog'
+import OptionChain from './components/OptionChain'
 import PositionsTable from './components/PositionsTable'
 import PriceChart from './components/PriceChart'
 import SessionPanel from './components/SessionPanel'
 import SignalsPanel from './components/SignalsPanel'
+import TickerTape from './components/TickerTape'
 import TradesTable from './components/TradesTable'
 import { useTheme } from './theme'
-import type { EngineEvent, Position, Signal, Status, Trade } from './types'
+import type {
+  EngineEvent,
+  Position,
+  Quote,
+  Signal,
+  Status,
+  TickerStatus,
+  Trade,
+} from './types'
 
 const POLL_MS = 5000
+// Prices are polled faster than the rest of the dashboard — a ticker that lags
+// five seconds behind does not read as live.
+const TICKER_POLL_MS = 1000
 
-type Tab = 'live' | 'backtest' | 'history'
+const TABS = [
+  { id: 'live', label: 'Live' },
+  { id: 'analyse', label: 'Analyse' },
+  { id: 'options', label: 'Options' },
+  { id: 'backtest', label: 'Backtest' },
+  { id: 'history', label: 'History' },
+] as const
+
+type Tab = (typeof TABS)[number]['id']
 
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null)
@@ -20,6 +42,8 @@ export default function App() {
   const [signals, setSignals] = useState<Signal[]>([])
   const [trades, setTrades] = useState<Trade[]>([])
   const [events, setEvents] = useState<EngineEvent[]>([])
+  const [quotes, setQuotes] = useState<Quote[]>([])
+  const [tickerStatus, setTickerStatus] = useState<TickerStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('live')
   const [symbol, setSymbol] = useState('')
@@ -61,6 +85,30 @@ export default function App() {
     return () => clearInterval(id)
   }, [refresh])
 
+  // Prices on their own faster loop. The websocket pushes ticks when the Breeze
+  // stream is live; this keeps the tape moving when it is only polling.
+  useEffect(() => {
+    let cancelled = false
+
+    const pull = async () => {
+      try {
+        const data = await api.ticker()
+        if (cancelled) return
+        setQuotes(data.quotes)
+        setTickerStatus(data.status)
+      } catch {
+        // Prices are non-critical; the main poll surfaces real outages.
+      }
+    }
+
+    pull()
+    const id = setInterval(pull, TICKER_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [])
+
   // The websocket pushes cycle results the moment they happen, so entries and
   // exits surface without waiting for the next poll.
   useEffect(() => {
@@ -71,6 +119,17 @@ export default function App() {
       socket.onmessage = (event) => {
         const payload = JSON.parse(event.data)
         if (payload.type === 'cycle' || payload.type === 'kill_switch') refresh()
+        if (payload.type === 'ticker' && Array.isArray(payload.data)) {
+          // Merge rather than replace: a push may carry only the symbols that
+          // moved, and dropping the rest would blank the tape.
+          setQuotes((current) => {
+            const byMostRecent = new Map(current.map((q) => [q.symbol, q]))
+            for (const quote of payload.data as Quote[]) {
+              byMostRecent.set(quote.symbol, quote)
+            }
+            return [...byMostRecent.values()]
+          })
+        }
       }
     } catch {
       // Polling already covers this; a failed socket is not fatal.
@@ -175,6 +234,12 @@ export default function App() {
         )}
       </div>
 
+      <TickerTape
+        quotes={quotes}
+        status={tickerStatus}
+        connected={status?.connected ?? false}
+      />
+
       {error && <div className="notice error">{error}</div>}
 
       {status?.live_mode_warning && (
@@ -251,24 +316,15 @@ export default function App() {
       )}
 
       <div className="tabs">
-        <button
-          className={`tab ${tab === 'live' ? 'active' : ''}`}
-          onClick={() => setTab('live')}
-        >
-          Live
-        </button>
-        <button
-          className={`tab ${tab === 'backtest' ? 'active' : ''}`}
-          onClick={() => setTab('backtest')}
-        >
-          Backtest
-        </button>
-        <button
-          className={`tab ${tab === 'history' ? 'active' : ''}`}
-          onClick={() => setTab('history')}
-        >
-          History
-        </button>
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            className={`tab ${tab === t.id ? 'active' : ''}`}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {tab === 'live' && (
@@ -304,6 +360,10 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {tab === 'analyse' && <AnalysePanel universe={status?.symbols ?? []} />}
+
+      {tab === 'options' && <OptionChain />}
 
       {tab === 'backtest' && <BacktestPanel symbols={status?.symbols ?? []} />}
 

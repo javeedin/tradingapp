@@ -1,10 +1,15 @@
 import type {
+  Analysis,
   BacktestResponse,
   CandleResponse,
   EngineEvent,
+  ExpiryCandidate,
+  OptionChainResponse,
   Position,
+  Quote,
   Signal,
   Status,
+  TickerStatus,
   Trade,
 } from './types'
 
@@ -70,6 +75,28 @@ export const api = {
     }),
 
   runCycle: () => request<Record<string, unknown>>('/cycle', { method: 'POST' }),
+
+  ticker: () => request<{ quotes: Quote[]; status: TickerStatus }>('/ticker'),
+
+  startTicker: () => request<TickerStatus>('/ticker/start', { method: 'POST' }),
+
+  analyse: (symbol: string, opts?: { interval?: string; intraday?: boolean }) => {
+    const params = new URLSearchParams()
+    if (opts?.interval) params.set('interval', opts.interval)
+    if (opts?.intraday !== undefined) params.set('intraday', String(opts.intraday))
+    const query = params.toString()
+    return request<Analysis>(
+      `/analyse/${encodeURIComponent(symbol.toUpperCase())}${query ? `?${query}` : ''}`,
+    )
+  },
+
+  expiries: () => request<{ expiries: ExpiryCandidate[]; note: string }>('/expiries'),
+
+  optionChain: (symbol: string, expiry?: string) => {
+    const params = new URLSearchParams({ symbol: symbol.toUpperCase() })
+    if (expiry) params.set('expiry', expiry)
+    return request<OptionChainResponse>(`/option-chain?${params.toString()}`)
+  },
 
   backtest: (payload: {
     days: number

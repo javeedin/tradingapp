@@ -156,6 +156,54 @@ cd desktop && npm run dist
 Note that packaging bundles the backend source but **not** a Python runtime —
 the target machine still needs Python and the installed dependencies.
 
+### Analysing a single stock
+
+The **Analyse** tab answers "should I buy this, and where do I get out" for any
+Breeze code — including instruments outside the configured universe, whose
+history is fetched on demand. It returns entry, ATR stoploss, target, position
+size, risk in rupees, risk:reward, the per-factor score breakdown, and the
+reasons behind the verdict.
+
+It uses the same `SignalEngine` and `RiskManager` as the live loop, so an ad-hoc
+lookup can never disagree with what the bot would actually do — a property the
+test suite asserts directly.
+
+A HOLD still returns the levels a trade *would* use. That is deliberate: a bare
+"no" throws away the useful half of the answer, and the levels are what let you
+set an alert instead of re-checking by hand.
+
+**No LLM is involved, and that is a deliberate choice.** The analysis is
+deterministic — same inputs, same output — which is what makes it backtestable,
+free, and instant. An LLM would break all three. (Where one *would* earn its
+place is news and earnings sentiment; that is not built yet.)
+
+### Live prices
+
+The ticker tape draws from two sources on purpose:
+
+- **Websocket** — Breeze pushes ticks as they happen. Near-instant, but the
+  payload's field names and instrument identifier vary between segments and SDK
+  versions.
+- **REST polling** — `get_quotes` every few seconds. Slower, but a stable shape.
+
+The stream is treated as an upgrade over polling, not a replacement. A tick that
+cannot be confidently attributed to a watched symbol is logged once and dropped
+rather than guessed at — attributing a price to the wrong stock is worse than a
+slightly stale one — and polling keeps the tape moving regardless.
+
+> The websocket path could not be verified against live Breeze during
+> development, since that needs real credentials and market hours. If the tape
+> shows `polling` rather than `stream`, check the backend log for the one-off
+> "unattributable tick" line: it prints a sample payload, which is all that is
+> needed to fix the field mapping.
+
+### Option chain
+
+The **Options** tab shows calls and puts around the ATM strike for a chosen
+underlying and expiry. Expiry dates are offered as *candidates* only — NSE has
+changed index expiry weekdays more than once and holidays shift an expiry
+earlier, so Breeze's acceptance of the date is the real check.
+
 ### Themes
 
 Light by default; the moon/sun button in the top bar toggles dark, and the

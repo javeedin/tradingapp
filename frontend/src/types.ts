@@ -142,6 +142,113 @@ export interface BacktestStats {
   note?: string
 }
 
+export interface Quote {
+  symbol: string
+  price: number
+  previous_close: number
+  change: number
+  change_pct: number
+  open: number
+  high: number
+  low: number
+  volume: number
+  updated_at: string
+  source: string
+}
+
+export interface TickerStatus {
+  streaming: boolean
+  polling: boolean
+  poll_interval_seconds?: number
+  ticks_received?: number
+  symbols?: string[]
+  tracked?: number
+  last_error?: string
+}
+
+export interface TradePlan {
+  entry: number
+  stoploss: number
+  target: number
+  stop_distance: number
+  stop_distance_pct: number
+  target_distance: number
+  target_distance_pct: number
+  risk_reward: number
+  quantity: number
+  notional: number
+  risk_amount: number
+  risk_pct_of_equity: number
+  approved: boolean
+  sizing_note: string
+  binding_constraint: string
+  was_capped: boolean
+  product: string
+}
+
+export interface MarketContext {
+  price: number
+  atr: number
+  atr_pct: number
+  rsi: number
+  adx: number
+  ema_20: number
+  ema_50: number
+  ema_200: number
+  vwap: number
+  volume_ratio: number
+  above_vwap: boolean
+  trend: string
+}
+
+export interface Analysis {
+  symbol: string
+  interval: string
+  as_of: string
+  candles_used: number
+  action: string
+  side: string
+  score: number
+  entry_threshold: number
+  conviction: string
+  factors: FactorBreakdown
+  reasons: string[]
+  plan: TradePlan
+  market: MarketContext
+}
+
+export interface ExpiryCandidate {
+  date: string
+  breeze_format: string
+  kind: string
+  label: string
+  days_away: number
+}
+
+export interface OptionLeg {
+  ltp: number | null
+  open_interest: number | null
+  volume: number | null
+  change: number | null
+  bid: number | null
+  ask: number | null
+}
+
+export interface OptionRow {
+  strike: number
+  call: OptionLeg | null
+  put: OptionLeg | null
+}
+
+export interface OptionChainResponse {
+  symbol: string
+  expiry: string
+  exchange: string
+  spot: number | null
+  rows: OptionRow[]
+  count: number
+}
+
 export interface BacktestResponse {
   stats: BacktestStats
   trades: Trade[]

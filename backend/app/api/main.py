@@ -18,7 +18,10 @@ from pydantic import BaseModel, Field
 from app.broker.paper import PaperBroker
 from app.config import REPO_ROOT, settings
 from app.data.breeze_client import BreezeClient, BreezeError, login_url
+from app.data.expiry import expiry_candidates, to_breeze_expiry
 from app.data.store import MarketStore
+from app.data.ticker import LiveTicker
+from app.engine.analysis import AnalysisError, analyse_symbol
 from app.engine.backtest import Backtester
 from app.engine.live import LiveTrader, is_market_open
 from app.models import ProductType
@@ -39,7 +42,11 @@ CYCLE_SECONDS = {
     "1day": 3600,
 }
 
-state: dict[str, Any] = {"trader": None, "scheduler": None}
+state: dict[str, Any] = {"trader": None, "scheduler": None, "ticker": None}
+
+
+def get_ticker() -> LiveTicker | None:
+    return state.get("ticker")
 
 
 def build_trader() -> LiveTrader:
@@ -101,6 +108,9 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(new_day_job, "cron", hour=9, minute=10, id="new_day")
     scheduler.start()
     state["scheduler"] = scheduler
+    # The ticker runs on its own threads and needs a handle on this loop to
+    # push updates back out over the websocket.
+    state["loop"] = asyncio.get_running_loop()
 
     logger.info(
         "Trading API ready | mode=%s interval=%s universe=%s",
@@ -113,6 +123,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         scheduler.shutdown(wait=False)
+        ticker = state.get("ticker")
+        if ticker is not None:
+            with contextlib.suppress(Exception):
+                ticker.stop()
         with contextlib.suppress(Exception):
             trader.client.stop_stream()
         trader.store.close()
@@ -230,30 +244,61 @@ async def status() -> dict[str, Any]:
     return payload
 
 
+def push_quotes(quotes: list[dict[str, Any]]) -> None:
+    """Forward ticker updates to websocket clients from a background thread."""
+    loop = state.get("loop")
+    if loop is None or not quotes:
+        return
+    # The ticker's threads cannot touch the event loop directly.
+    asyncio.run_coroutine_threadsafe(
+        broadcast({"type": "ticker", "data": quotes}), loop
+    )
+
+
+def start_ticker() -> dict[str, Any]:
+    """Start (or restart) the live price feed for the current universe."""
+    trader = get_trader()
+
+    existing = state.get("ticker")
+    if existing is not None:
+        with contextlib.suppress(Exception):
+            existing.stop()
+
+    ticker = LiveTicker(trader.client, trader.symbols, on_update=push_quotes)
+    state["ticker"] = ticker
+    return ticker.start()
+
+
 @app.post("/api/session")
 async def create_session(request: SessionRequest) -> dict[str, Any]:
-    """Submit the daily Breeze session token and backfill history."""
+    """Submit the daily Breeze session token, backfill history, start the feed."""
     trader = get_trader()
     try:
         trader.connect(request.session_token.strip())
     except BreezeError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
+    response: dict[str, Any] = {"connected": True}
+
     try:
         filled = await asyncio.to_thread(trader.backfill)
+        response["backfilled"] = filled
+        response["message"] = (
+            f"Session established. Backfilled {sum(filled.values())} candles."
+        )
     except BreezeError as exc:
         # The session is valid even if backfill partly failed — report both.
-        return {
-            "connected": True,
-            "backfill_error": str(exc),
-            "message": "Session established, but historical backfill failed.",
-        }
+        response["backfill_error"] = str(exc)
+        response["message"] = "Session established, but historical backfill failed."
 
-    return {
-        "connected": True,
-        "backfilled": filled,
-        "message": f"Session established. Backfilled {sum(filled.values())} candles.",
-    }
+    # The live feed is a bonus, never a reason to fail the connect.
+    try:
+        response["ticker"] = await asyncio.to_thread(start_ticker)
+    except Exception as exc:
+        logger.warning("Could not start the live ticker: %s", exc)
+        response["ticker_error"] = str(exc)
+
+    return response
 
 
 @app.get("/api/session/login-url")
@@ -348,6 +393,188 @@ async def candles(symbol: str, limit: int = 300, interval: str | None = None) ->
             "rsi": series("rsi"),
         },
     }
+
+
+# ----------------------------------------------------------------------
+# Live prices
+# ----------------------------------------------------------------------
+@app.get("/api/ticker")
+async def ticker() -> dict[str, Any]:
+    """Latest price per watched symbol."""
+    live = get_ticker()
+    if live is None:
+        return {"quotes": [], "status": {"streaming": False, "polling": False}}
+    return {"quotes": live.quotes(), "status": live.status()}
+
+
+@app.post("/api/ticker/start")
+async def ticker_start() -> dict[str, Any]:
+    trader = get_trader()
+    if not trader.is_connected:
+        raise HTTPException(status_code=401, detail="Establish a Breeze session first")
+    try:
+        return await asyncio.to_thread(start_ticker)
+    except BreezeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/ticker/watch")
+async def ticker_watch(symbols: list[str]) -> dict[str, Any]:
+    """Replace the watch list — used when analysing a symbol outside the universe."""
+    live = get_ticker()
+    if live is None:
+        raise HTTPException(status_code=409, detail="The ticker is not running")
+    live.set_symbols(symbols)
+    return live.status()
+
+
+# ----------------------------------------------------------------------
+# Symbol analysis
+# ----------------------------------------------------------------------
+@app.get("/api/analyse/{symbol}")
+async def analyse(
+    symbol: str,
+    interval: str | None = None,
+    intraday: bool = True,
+    lot_size: int = 1,
+) -> dict[str, Any]:
+    """Trade plan for any symbol: verdict, entry, stoploss, target, size.
+
+    Works for instruments outside the configured universe — history is fetched on
+    demand when a Breeze session exists.
+    """
+    trader = get_trader()
+
+    try:
+        return await asyncio.to_thread(
+            analyse_symbol,
+            symbol,
+            trader.store,
+            trader.engine,
+            trader.risk,
+            client=trader.client if trader.is_connected else None,
+            broker=trader.broker,
+            interval=interval,
+            benchmark_code=trader.benchmark_code,
+            product=ProductType.INTRADAY if intraday else ProductType.DELIVERY,
+            lot_size=lot_size,
+        )
+    except AnalysisError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BreezeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+# ----------------------------------------------------------------------
+# Options
+# ----------------------------------------------------------------------
+@app.get("/api/expiries")
+async def expiries() -> dict[str, Any]:
+    """Candidate expiry dates for the option chain picker."""
+    return {
+        "expiries": expiry_candidates(),
+        "note": (
+            "Candidates only — NSE has changed index expiry weekdays before, and "
+            "holidays shift an expiry earlier. Breeze rejects a date that is not a "
+            "real contract."
+        ),
+    }
+
+
+@app.get("/api/option-chain")
+async def option_chain(
+    symbol: str = "NIFTY",
+    expiry: str | None = None,
+    exchange: str = "NFO",
+) -> dict[str, Any]:
+    """Calls and puts for one expiry, paired by strike.
+
+    Breeze returns calls and puts as separate lists; they are joined here so the
+    dashboard can render a conventional chain.
+    """
+    trader = get_trader()
+    if not trader.is_connected:
+        raise HTTPException(status_code=401, detail="Establish a Breeze session first")
+
+    if not expiry:
+        candidates = expiry_candidates()
+        if not candidates:
+            raise HTTPException(status_code=400, detail="No expiry supplied or derivable")
+        expiry = candidates[0]["date"]
+
+    breeze_expiry = to_breeze_expiry(expiry)
+    symbol = symbol.strip().upper()
+
+    def fetch(right: str) -> list[dict[str, Any]]:
+        return trader.client.get_option_chain(
+            stock_code=symbol,
+            expiry_date=breeze_expiry,
+            right=right,
+            exchange_code=exchange,
+        )
+
+    try:
+        calls = await asyncio.to_thread(fetch, "call")
+        puts = await asyncio.to_thread(fetch, "put")
+    except BreezeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    def index_by_strike(rows: list[dict[str, Any]]) -> dict[float, dict[str, Any]]:
+        indexed: dict[float, dict[str, Any]] = {}
+        for row in rows:
+            try:
+                strike = float(row.get("strike_price") or 0)
+            except (TypeError, ValueError):
+                continue
+            if strike:
+                indexed[strike] = row
+        return indexed
+
+    call_map = index_by_strike(calls)
+    put_map = index_by_strike(puts)
+
+    def leg(row: dict[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "ltp": _num(row.get("ltp")),
+            "open_interest": _num(row.get("open_interest") or row.get("oi")),
+            "volume": _num(row.get("total_quantity_traded") or row.get("volume")),
+            "change": _num(row.get("ltp_percent_change") or row.get("change")),
+            "bid": _num(row.get("best_bid_price")),
+            "ask": _num(row.get("best_offer_price")),
+        }
+
+    rows = [
+        {"strike": strike, "call": leg(call_map.get(strike)), "put": leg(put_map.get(strike))}
+        for strike in sorted(set(call_map) | set(put_map))
+    ]
+
+    # The underlying's spot, so the UI can mark the at-the-money strike.
+    spot = None
+    live = get_ticker()
+    if live is not None:
+        spot = live.prices().get(symbol)
+    if spot is None:
+        frame = trader.store.load_candles(symbol, settings.candle_interval, limit=1)
+        if not frame.empty:
+            spot = float(frame.iloc[-1]["close"])
+
+    return {
+        "symbol": symbol,
+        "expiry": expiry,
+        "exchange": exchange,
+        "spot": round(spot, 2) if spot else None,
+        "rows": rows,
+        "count": len(rows),
+    }
+
+
+def _num(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # ----------------------------------------------------------------------

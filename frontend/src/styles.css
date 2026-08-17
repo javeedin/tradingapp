@@ -549,6 +549,52 @@ th.num {
   width: 100%;
 }
 
+/* ---------- Ticker tape ---------- */
+.ticker-tape {
+  margin-bottom: 16px;
+  padding: 8px 14px;
+}
+
+.tick-rail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  /* The tape must scroll inside itself rather than widening the page. */
+  scrollbar-width: thin;
+}
+
+.tick {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 5px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tick-symbol {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+}
+
+.tick-price {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.tick-change {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+
 code {
   font-family: var(--mono);
   font-size: 12px;
