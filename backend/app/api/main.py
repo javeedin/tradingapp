@@ -731,11 +731,11 @@ Provide a JSON response with:
                 "https://api.anthropic.com/v1/messages",
                 headers={
                     "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
+                    "anthropic-version": "2024-06-01",
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-3-5-sonnet-20241022",
+                    "model": "claude-opus-4-1-20250805",
                     "max_tokens": 1024,
                     "messages": [{"role": "user", "content": prompt}],
                 },
