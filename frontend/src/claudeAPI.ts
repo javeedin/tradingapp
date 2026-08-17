@@ -125,9 +125,13 @@ Format your response as JSON only with this structure:
 
 function parseClaudeResponse(content: string, fullResponse: string = ''): ClaudeAnalysisResult {
   try {
+    if (!content || content.trim() === '') {
+      throw new Error('Claude API returned empty response text')
+    }
+
     const jsonMatch = content.match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
-      throw new Error(`No JSON found in response. Full response:\n\n${content}`)
+      throw new Error(`No JSON found in response. Claude returned:\n\n${content}`)
     }
 
     const parsed = JSON.parse(jsonMatch[0])
@@ -147,7 +151,7 @@ function parseClaudeResponse(content: string, fullResponse: string = ''): Claude
     }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
-    const responseToShow = fullResponse || content || 'No response received'
-    throw new Error(`Failed to parse Claude response:\n\n${errorMsg}\n\nFull response:\n${responseToShow}`)
+    const debugInfo = fullResponse ? `\n\nExtracted text:\n${content}\n\nFull API response:\n${fullResponse}` : `\n\nResponse text:\n${content || '(empty)'}`
+    throw new Error(`Failed to parse Claude response:\n${errorMsg}${debugInfo}`)
   }
 }
