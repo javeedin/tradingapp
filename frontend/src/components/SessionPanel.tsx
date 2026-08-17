@@ -151,6 +151,12 @@ export default function SessionPanel({
             The Breeze session token expires every day. Click <strong>Open Breeze login</strong>,
             sign in, and you will be sent back here — the token is picked up from the redirect
             automatically, no copying required.
+            <br />
+            <span style={{ opacity: 0.85 }}>
+              The session token is a short value from the redirect URL (
+              <code>apisession=…</code>), not your API key or secret — those live in{' '}
+              <code>.env</code>.
+            </span>
           </div>
         )}
 
@@ -175,7 +181,7 @@ export default function SessionPanel({
           )}
           <input
             style={{ flex: 1, minWidth: 220 }}
-            placeholder="Paste today's API_Session token (or use the login button)"
+            placeholder="Today's session token, e.g. 48123456 (or just use the login button)"
             value={token}
             onChange={(e) => setToken(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && connect(token)}

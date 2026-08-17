@@ -114,6 +114,25 @@ class BreezeClient:
         if not self.api_key or not self.api_secret:
             raise BreezeError("BREEZE_API_KEY and BREEZE_API_SECRET must both be set.")
 
+        # Easy mistake to make: the API key and secret are long, permanent, and
+        # displayed right next to each other on the Breeze app page, while the
+        # session token is a short daily value that only appears in the login
+        # redirect URL. Breeze answers all three with the same opaque "Could not
+        # authenticate credentials" message, so name the confusion here.
+        if token == self.api_key.strip():
+            raise SessionExpiredError(
+                "That is your API key, not the session token. The session token is a "
+                "short value (often 8 digits) that Breeze appends to the redirect URL "
+                "after you log in — look for 'apisession=' in the address bar. "
+                "The API key belongs in BREEZE_API_KEY in your .env file."
+            )
+        if token == self.api_secret.strip():
+            raise SessionExpiredError(
+                "That is your secret key, not the session token. The session token is a "
+                "short value from the login redirect URL ('apisession=' in the address "
+                "bar). The secret key belongs in BREEZE_API_SECRET in your .env file."
+            )
+
         try:
             from breeze_connect import BreezeConnect
         except ImportError as exc:  # pragma: no cover - depends on environment
