@@ -736,7 +736,10 @@ Provide a JSON response with:
                 },
                 json={
                     "model": "claude-sonnet-5",
-                    "max_tokens": 1024,
+                    "max_tokens": 4096,
+                    "thinking": {
+                        "type": "disabled",
+                    },
                     "messages": [{"role": "user", "content": prompt}],
                 },
                 timeout=30.0,
