@@ -7,6 +7,7 @@ import PriceChart from './components/PriceChart'
 import SessionPanel from './components/SessionPanel'
 import SignalsPanel from './components/SignalsPanel'
 import TradesTable from './components/TradesTable'
+import { useTheme } from './theme'
 import type { EngineEvent, Position, Signal, Status, Trade } from './types'
 
 const POLL_MS = 5000
@@ -24,6 +25,7 @@ export default function App() {
   const [symbol, setSymbol] = useState('')
   const [closing, setClosing] = useState<string | null>(null)
   const [acting, setActing] = useState(false)
+  const [theme, toggleTheme] = useTheme()
 
   // Keeps the chart from resetting the user's symbol choice on every poll.
   const symbolInitialised = useRef(false)
@@ -151,6 +153,14 @@ export default function App() {
         <span className="dim" style={{ fontSize: 12 }}>
           {status?.interval} · {status?.cycles ?? 0} cycles
         </span>
+        <button
+          className="icon"
+          onClick={toggleTheme}
+          title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
+          aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
+        >
+          {theme === 'light' ? '🌙' : '☀️'}
+        </button>
         <button onClick={runCycle} disabled={acting || !status?.connected}>
           Run cycle
         </button>
@@ -277,6 +287,7 @@ export default function App() {
                   symbol={symbol}
                   symbols={status.symbols}
                   onSymbolChange={setSymbol}
+                  theme={theme}
                 />
               )}
               <PositionsTable

@@ -1,5 +1,4 @@
 import {
-  CandlestickSeriesPartialOptions,
   createChart,
   IChartApi,
   ISeriesApi,
@@ -8,16 +7,8 @@ import {
 } from 'lightweight-charts'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
+import { cssVar, type Theme } from '../theme'
 import type { CandleResponse } from '../types'
-
-const CANDLE_STYLE: CandlestickSeriesPartialOptions = {
-  upColor: '#26a96c',
-  downColor: '#e5484d',
-  borderUpColor: '#26a96c',
-  borderDownColor: '#e5484d',
-  wickUpColor: '#26a96c',
-  wickDownColor: '#e5484d',
-}
 
 /** Convert an ISO timestamp to the epoch-seconds Time the chart expects. */
 function toTime(iso: string): UTCTimestamp {
@@ -37,13 +28,35 @@ function dedupe<T extends { time: Time }>(points: T[]): T[] {
   return [...byTime.values()].sort((a, b) => (a.time as number) - (b.time as number))
 }
 
+/**
+ * Chart colours pulled from the active theme's CSS custom properties.
+ *
+ * The chart draws to a canvas and cannot inherit CSS, so it has to be told its
+ * colours explicitly — reading them back from the stylesheet avoids keeping a
+ * duplicate palette in sync by hand.
+ */
+function chartPalette() {
+  return {
+    background: cssVar('--panel', '#ffffff'),
+    text: cssVar('--text-dim', '#5a6675'),
+    border: cssVar('--border', '#dde3ea'),
+    grid: cssVar('--border-soft', '#e8edf3'),
+    up: cssVar('--green', '#128a4d'),
+    down: cssVar('--red', '#d32f36'),
+    accent: cssVar('--accent', '#2563eb'),
+    amber: cssVar('--amber', '#a86612'),
+    faint: cssVar('--text-faint', '#8d98a7'),
+  }
+}
+
 interface Props {
   symbol: string
   symbols: string[]
   onSymbolChange: (symbol: string) => void
+  theme: Theme
 }
 
-export default function PriceChart({ symbol, symbols, onSymbolChange }: Props) {
+export default function PriceChart({ symbol, symbols, onSymbolChange, theme }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -55,41 +68,49 @@ export default function PriceChart({ symbol, symbols, onSymbolChange }: Props) {
   const [loading, setLoading] = useState(false)
   const [barCount, setBarCount] = useState(0)
 
-  // Create the chart once; series are reused across symbol changes.
+  // Create the chart once; series are reused across symbol and theme changes.
   useEffect(() => {
     if (!hostRef.current) return
 
+    const colors = chartPalette()
     const chart = createChart(hostRef.current, {
       layout: {
-        background: { color: '#141922' },
-        textColor: '#8b95a7',
+        background: { color: colors.background },
+        textColor: colors.text,
         fontSize: 11,
       },
       grid: {
-        vertLines: { color: 'rgba(35, 43, 56, 0.5)' },
-        horzLines: { color: 'rgba(35, 43, 56, 0.5)' },
+        vertLines: { color: colors.grid },
+        horzLines: { color: colors.grid },
       },
-      rightPriceScale: { borderColor: '#232b38' },
-      timeScale: { borderColor: '#232b38', timeVisible: true, secondsVisible: false },
+      rightPriceScale: { borderColor: colors.border },
+      timeScale: { borderColor: colors.border, timeVisible: true, secondsVisible: false },
       crosshair: { mode: 1 },
       autoSize: true,
     })
 
-    candleRef.current = chart.addCandlestickSeries(CANDLE_STYLE)
+    candleRef.current = chart.addCandlestickSeries({
+      upColor: colors.up,
+      downColor: colors.down,
+      borderUpColor: colors.up,
+      borderDownColor: colors.down,
+      wickUpColor: colors.up,
+      wickDownColor: colors.down,
+    })
     emaFastRef.current = chart.addLineSeries({
-      color: '#4c8dff',
+      color: colors.accent,
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
     })
     emaSlowRef.current = chart.addLineSeries({
-      color: '#e8a33d',
+      color: colors.amber,
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false,
     })
     vwapRef.current = chart.addLineSeries({
-      color: '#8b95a7',
+      color: colors.faint,
       lineWidth: 1,
       lineStyle: 2,
       priceLineVisible: false,
@@ -102,6 +123,34 @@ export default function PriceChart({ symbol, symbols, onSymbolChange }: Props) {
       chartRef.current = null
     }
   }, [])
+
+  // Re-colour in place when the theme flips. Recreating the chart would lose
+  // the loaded data and the user's zoom/pan position.
+  useEffect(() => {
+    if (!chartRef.current) return
+    const colors = chartPalette()
+
+    chartRef.current.applyOptions({
+      layout: { background: { color: colors.background }, textColor: colors.text },
+      grid: {
+        vertLines: { color: colors.grid },
+        horzLines: { color: colors.grid },
+      },
+      rightPriceScale: { borderColor: colors.border },
+      timeScale: { borderColor: colors.border },
+    })
+    candleRef.current?.applyOptions({
+      upColor: colors.up,
+      downColor: colors.down,
+      borderUpColor: colors.up,
+      borderDownColor: colors.down,
+      wickUpColor: colors.up,
+      wickDownColor: colors.down,
+    })
+    emaFastRef.current?.applyOptions({ color: colors.accent })
+    emaSlowRef.current?.applyOptions({ color: colors.amber })
+    vwapRef.current?.applyOptions({ color: colors.faint })
+  }, [theme])
 
   useEffect(() => {
     if (!symbol) return
@@ -160,9 +209,9 @@ export default function PriceChart({ symbol, symbols, onSymbolChange }: Props) {
           ))}
         </select>
         <span className="dim" style={{ fontSize: 11, fontWeight: 400 }}>
-          <span style={{ color: '#4c8dff' }}>—</span> EMA20{' '}
-          <span style={{ color: '#e8a33d' }}>—</span> EMA50{' '}
-          <span style={{ color: '#8b95a7' }}>--</span> VWAP
+          <span style={{ color: 'var(--accent)' }}>—</span> EMA20{' '}
+          <span style={{ color: 'var(--amber)' }}>—</span> EMA50{' '}
+          <span style={{ color: 'var(--text-faint)' }}>--</span> VWAP
         </span>
         <div className="spacer" />
         <span className="dim" style={{ fontSize: 11, fontWeight: 400 }}>

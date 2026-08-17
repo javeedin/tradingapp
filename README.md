@@ -112,7 +112,7 @@ intraday leverage to hold those positions.
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
 cp ../.env.example ../.env      # then fill in BREEZE_API_KEY / BREEZE_API_SECRET
@@ -129,6 +129,39 @@ npm run dev                     # serves on :5173, proxies /api to :8000
 ```
 
 Open <http://localhost:5173>.
+
+### Desktop app (optional)
+
+Runs everything in one window and starts the Python backend for you — no
+terminals, no two-server dance:
+
+```bash
+cd frontend && npm install && npm run build    # build the dashboard once
+cd ../desktop && npm install
+npm start
+```
+
+The Electron main process spawns the backend, waits for `/api/health`, then
+loads the dashboard **which the backend itself serves** — so the UI and API
+share one origin and there is no CORS or proxy involved. Closing the window
+shuts the backend down, so quitting can never leave a trading process running
+in the background.
+
+To produce an installer (`.exe` / `.dmg` / `.AppImage`):
+
+```bash
+cd desktop && npm run dist
+```
+
+Note that packaging bundles the backend source but **not** a Python runtime —
+the target machine still needs Python and the installed dependencies.
+
+### Themes
+
+Light by default; the moon/sun button in the top bar toggles dark, and the
+choice is remembered. The price chart is canvas-based and cannot inherit CSS,
+so it reads the active theme's custom properties and re-colours in place rather
+than keeping a second palette in sync by hand.
 
 ### Tests
 
@@ -238,8 +271,12 @@ backend/app/
 
 frontend/src/
 ├── App.tsx                # layout, polling, controls
-├── api.ts, types.ts
+├── api.ts, types.ts, theme.ts
 └── components/            # chart, positions, signals, trades, backtest, log
+
+desktop/
+├── main.js                # Electron: spawns the backend, owns its lifecycle
+└── package.json           # electron-builder packaging config
 ```
 
 ---

@@ -12,10 +12,11 @@ from typing import Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.broker.paper import PaperBroker
-from app.config import settings
+from app.config import REPO_ROOT, settings
 from app.data.breeze_client import BreezeClient, BreezeError, login_url
 from app.data.store import MarketStore
 from app.engine.backtest import Backtester
@@ -439,6 +440,27 @@ async def run_backtest(request: BacktestRequest) -> dict[str, Any]:
     payload["bars"] = {s: len(f) for s, f in data.items()}
     payload["summary"] = result.summary_text()
     return payload
+
+
+# ----------------------------------------------------------------------
+# Static frontend
+# ----------------------------------------------------------------------
+# Mounted last so it never shadows an /api route. When the dashboard has been
+# built, the API also serves it — that puts the UI and the API on one origin,
+# which is what lets the desktop app skip CORS and the dev proxy entirely.
+# In development you normally use the Vite server on :5173 instead, and this
+# mount simply does not exist because dist/ has not been built.
+FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
+
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="dashboard")
+    logger.info("Serving dashboard from %s", FRONTEND_DIST)
+else:
+    logger.info(
+        "No built dashboard at %s — run 'npm run build' in frontend/ to serve it "
+        "from this API, or use the Vite dev server.",
+        FRONTEND_DIST,
+    )
 
 
 def run() -> None:

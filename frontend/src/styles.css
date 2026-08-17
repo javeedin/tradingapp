@@ -1,19 +1,67 @@
+/* ============================================================================
+   Theme tokens.
+
+   Light is the default palette on bare :root. Dark is applied only when the
+   root element carries data-theme="dark", so a viewer with no stored
+   preference gets light without a flash of the wrong theme.
+   ============================================================================ */
 :root {
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --panel-alt: #f1f4f8;
+  --border: #dde3ea;
+  --border-soft: #e8edf3;
+  --text: #17202c;
+  --text-dim: #5a6675;
+  --text-faint: #8d98a7;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --green: #128a4d;
+  --green-bg: #e3f7ec;
+  --green-fg: #0d6b3c;
+  --red: #d32f36;
+  --red-bg: #fdeaea;
+  --red-fg: #a81f26;
+  --amber: #a86612;
+  --amber-bg: #fdf1dc;
+  --info-bg: #e8f0fe;
+  --info-border: #c3d7f8;
+  --info-fg: #1a4d9e;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.05);
+  --hover: rgba(16, 24, 40, 0.03);
+
+  --radius: 8px;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
   --bg: #0b0e14;
   --panel: #141922;
   --panel-alt: #1a212c;
   --border: #232b38;
+  --border-soft: rgba(35, 43, 56, 0.6);
   --text: #e4e8ef;
   --text-dim: #8b95a7;
   --text-faint: #5d6879;
   --accent: #4c8dff;
+  --accent-hover: #3d7ae8;
   --green: #26a96c;
-  --green-dim: #1a3d2c;
+  --green-bg: #1a3d2c;
+  --green-fg: #5cd39b;
   --red: #e5484d;
-  --red-dim: #3d1f21;
+  --red-bg: #3d1f21;
+  --red-fg: #ff8a8d;
   --amber: #e8a33d;
-  --radius: 8px;
-  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  --amber-bg: #3d3117;
+  --info-bg: #16283f;
+  --info-border: #244066;
+  --info-fg: #8fbaff;
+  --shadow: none;
+  --hover: rgba(255, 255, 255, 0.02);
+
+  color-scheme: dark;
 }
 
 * {
@@ -35,15 +83,15 @@ button {
   cursor: pointer;
   border-radius: 6px;
   border: 1px solid var(--border);
-  background: var(--panel-alt);
+  background: var(--panel);
   color: var(--text);
   padding: 7px 14px;
   transition: background 0.12s, border-color 0.12s;
 }
 
 button:hover:not(:disabled) {
-  background: #232b38;
-  border-color: #33405a;
+  background: var(--panel-alt);
+  border-color: var(--text-faint);
 }
 
 button:disabled {
@@ -58,7 +106,8 @@ button.primary {
 }
 
 button.primary:hover:not(:disabled) {
-  background: #3d7ae8;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 button.danger {
@@ -68,14 +117,19 @@ button.danger {
 }
 
 button.danger:hover:not(:disabled) {
-  background: #cc3b40;
+  filter: brightness(0.92);
+}
+
+button.icon {
+  padding: 7px 10px;
+  line-height: 1;
 }
 
 input,
 select {
   font-family: inherit;
   font-size: 13px;
-  background: var(--bg);
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
@@ -86,6 +140,7 @@ input:focus,
 select:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 /* ---------- Layout ---------- */
@@ -105,6 +160,7 @@ select:focus {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   margin-bottom: 16px;
+  box-shadow: var(--shadow);
 }
 
 .topbar h1 {
@@ -138,6 +194,7 @@ select:focus {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+  box-shadow: var(--shadow);
 }
 
 .panel-head {
@@ -158,7 +215,7 @@ select:focus {
   padding: 0;
 }
 
-/* ---------- Badges & pills ---------- */
+/* ---------- Badges ---------- */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -172,27 +229,27 @@ select:focus {
 }
 
 .badge.paper {
-  background: #1d2f4d;
-  color: #7fb0ff;
+  background: var(--info-bg);
+  color: var(--info-fg);
 }
 
 .badge.live {
-  background: var(--red-dim);
-  color: #ff8a8d;
+  background: var(--red-bg);
+  color: var(--red-fg);
 }
 
 .badge.ok {
-  background: var(--green-dim);
-  color: #5cd39b;
+  background: var(--green-bg);
+  color: var(--green-fg);
 }
 
 .badge.off {
-  background: #2a2f3a;
+  background: var(--panel-alt);
   color: var(--text-dim);
 }
 
 .badge.warn {
-  background: #3d3117;
+  background: var(--amber-bg);
   color: var(--amber);
 }
 
@@ -266,16 +323,17 @@ th {
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
+  background: var(--panel);
 }
 
 td {
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(35, 43, 56, 0.6);
+  border-bottom: 1px solid var(--border-soft);
   white-space: nowrap;
 }
 
 tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--hover);
 }
 
 .num {
@@ -386,7 +444,7 @@ th.num {
   line-height: 1.5;
 }
 
-/* ---------- Misc ---------- */
+/* ---------- Notices ---------- */
 .notice {
   padding: 11px 14px;
   border-radius: 6px;
@@ -396,29 +454,30 @@ th.num {
 }
 
 .notice.error {
-  background: var(--red-dim);
-  border: 1px solid #5c2b2e;
-  color: #ff9ca0;
+  background: var(--red-bg);
+  border: 1px solid color-mix(in srgb, var(--red) 30%, transparent);
+  color: var(--red-fg);
 }
 
 .notice.warn {
-  background: #33290f;
-  border: 1px solid #57451a;
-  color: #f0c274;
+  background: var(--amber-bg);
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent);
+  color: var(--amber);
 }
 
 .notice.info {
-  background: #16283f;
-  border: 1px solid #244066;
-  color: #8fbaff;
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
+  color: var(--info-fg);
 }
 
 .notice.success {
-  background: var(--green-dim);
-  border: 1px solid #235640;
-  color: #7ddcae;
+  background: var(--green-bg);
+  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+  color: var(--green-fg);
 }
 
+/* ---------- Misc ---------- */
 .row {
   display: flex;
   gap: 10px;
@@ -446,6 +505,7 @@ th.num {
 
 .tab:hover:not(:disabled) {
   background: none;
+  border-color: transparent;
   color: var(--text);
 }
 
@@ -464,7 +524,7 @@ th.num {
   display: flex;
   gap: 10px;
   padding: 8px 16px;
-  border-bottom: 1px solid rgba(35, 43, 56, 0.6);
+  border-bottom: 1px solid var(--border-soft);
   line-height: 1.45;
 }
 
@@ -492,10 +552,11 @@ th.num {
 code {
   font-family: var(--mono);
   font-size: 12px;
-  background: var(--bg);
-  padding: 2px 6px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
   border-radius: 4px;
-  color: #9dc4ff;
+  color: var(--accent);
 }
 
 a {

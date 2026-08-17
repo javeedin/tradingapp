@@ -1,0 +1,28 @@
+{
+  "name": "tradingapp-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop shell for the trading dashboard",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:frontend": "npm --prefix ../frontend run build",
+    "dist": "npm run build:frontend && electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.tradingapp.desktop",
+    "productName": "Trading Dashboard",
+    "files": ["main.js", "package.json"],
+    "extraResources": [
+      { "from": "../frontend/dist", "to": "frontend/dist" },
+      { "from": "../backend", "to": "backend", "filter": ["**/*", "!.venv", "!__pycache__"] }
+    ],
+    "win": { "target": "nsis" },
+    "mac": { "target": "dmg" },
+    "linux": { "target": "AppImage" }
+  }
+}
