@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, formatCurrency, formatNumber } from '../api'
+import OrderDialog, { type OrderDraft } from './OrderDialog'
 import type {
   BrokerPosition,
   BrokerPositionsResponse,
   OrderProductsResponse,
-  PlaceOrderResponse,
 } from '../types'
 
 const STATUS_LABEL: Record<string, { text: string; tone: string }> = {
@@ -36,57 +36,37 @@ function ProgressBar({ pct }: { pct: number }) {
 function OrderForm({
   onPlaced,
   universe,
+  mode,
 }: {
   onPlaced: () => void
   universe: string[]
+  mode: string
 }) {
   const [products, setProducts] = useState<OrderProductsResponse | null>(null)
   const [symbol, setSymbol] = useState('')
   const [side, setSide] = useState('buy')
   const [product, setProduct] = useState('cash')
   const [quantity, setQuantity] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<PlaceOrderResponse | null>(null)
+  const [draft, setDraft] = useState<OrderDraft | null>(null)
+  const [placed, setPlaced] = useState<string | null>(null)
 
   useEffect(() => {
     api.orderProducts().then(setProducts).catch(() => {})
   }, [])
 
-  const submit = async () => {
+  const review = () => {
     const code = symbol.trim().toUpperCase()
     if (!code) return
 
-    const qty = quantity.trim() ? Number(quantity) : 0
-    const sized = qty > 0 ? `${qty}` : 'a risk-sized quantity'
-    if (
-      !confirm(
-        `Place a ${side.toUpperCase()} order for ${sized} of ${code} (${product})?\n\n` +
-          'The stoploss and target will be attached automatically.',
-      )
-    ) {
-      return
-    }
-
-    setBusy(true)
-    setError(null)
-    setResult(null)
-    try {
-      const response = await api.placeOrder({
-        symbol: code,
-        side,
-        product,
-        quantity: qty,
-      })
-      setResult(response)
-      setSymbol('')
-      setQuantity('')
-      onPlaced()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setBusy(false)
-    }
+    const label =
+      products?.placeable.find((p) => p.value === product)?.label ?? product
+    setDraft({
+      symbol: code,
+      side,
+      product,
+      productLabel: label,
+      quantity: quantity.trim() ? Number(quantity) : 0,
+    })
   }
 
   return (
@@ -104,7 +84,7 @@ function OrderForm({
             placeholder="Stock code, e.g. RELIND"
             value={symbol}
             onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-            onKeyDown={(e) => e.key === 'Enter' && submit()}
+            onKeyDown={(e) => e.key === 'Enter' && review()}
           />
           <select value={side} onChange={(e) => setSide(e.target.value)}>
             <option value="buy">BUY</option>
@@ -123,8 +103,8 @@ function OrderForm({
             value={quantity}
             onChange={(e) => setQuantity(e.target.value.replace(/\D/g, ''))}
           />
-          <button className="primary" onClick={submit} disabled={busy || !symbol.trim()}>
-            {busy ? 'Placing…' : 'Place order'}
+          <button className="primary" onClick={review} disabled={!symbol.trim()}>
+            Place order
           </button>
         </div>
 
@@ -154,35 +134,30 @@ function OrderForm({
           monitored below.
         </div>
 
-        {error && (
-          <div className="notice error" style={{ marginTop: 12, marginBottom: 0 }}>
-            {error}
-          </div>
-        )}
-
-        {result && (
-          <div
-            className={`notice ${result.order.status === 'filled' ? 'success' : 'warn'}`}
-            style={{ marginTop: 12, marginBottom: 0 }}
-          >
-            <strong>
-              {result.order.status.toUpperCase()} ({result.mode})
-            </strong>{' '}
-            {result.order.side.toUpperCase()} {result.order.quantity} ×{' '}
-            {result.order.symbol}
-            {result.order.filled_price
-              ? ` at ${formatNumber(result.order.filled_price)}`
-              : ''}{' '}
-            · stop {formatNumber(result.plan.stoploss)} · target{' '}
-            {formatNumber(result.plan.target)}
-            <br />
-            <span style={{ fontSize: 12, opacity: 0.85 }}>
-              Engine verdict at placement: {result.analysis.action.toUpperCase()} (
-              {result.analysis.conviction})
-            </span>
+        {placed && (
+          <div className="notice success" style={{ marginTop: 12, marginBottom: 0 }}>
+            {placed}
           </div>
         )}
       </div>
+
+      {draft && (
+        <OrderDialog
+          draft={draft}
+          mode={mode}
+          onCancel={() => setDraft(null)}
+          onConfirmed={() => {
+            setPlaced(
+              `${draft.side.toUpperCase()} order placed for ${draft.symbol}. ` +
+                'Stoploss and target are attached.',
+            )
+            setDraft(null)
+            setSymbol('')
+            setQuantity('')
+            onPlaced()
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -231,7 +206,13 @@ function PositionRow({ position }: { position: BrokerPosition }) {
   )
 }
 
-export default function TradePanel({ universe }: { universe: string[] }) {
+export default function TradePanel({
+  universe,
+  mode,
+}: {
+  universe: string[]
+  mode: string
+}) {
   const [data, setData] = useState<BrokerPositionsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -263,7 +244,7 @@ export default function TradePanel({ universe }: { universe: string[] }) {
 
   return (
     <div className="grid" style={{ gap: 16 }}>
-      <OrderForm onPlaced={load} universe={universe} />
+      <OrderForm onPlaced={load} universe={universe} mode={mode} />
 
       {needsAttention.length > 0 && (
         <div className="notice error" style={{ marginBottom: 0 }}>

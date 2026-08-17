@@ -365,7 +365,9 @@ export default function App() {
 
       {tab === 'analyse' && <AnalysePanel universe={status?.symbols ?? []} />}
 
-      {tab === 'trade' && <TradePanel universe={status?.symbols ?? []} />}
+      {tab === 'trade' && (
+        <TradePanel universe={status?.symbols ?? []} mode={status?.mode ?? 'paper'} />
+      )}
 
       {tab === 'options' && <OptionChain />}
 
