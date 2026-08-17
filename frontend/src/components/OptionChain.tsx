@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { api, formatNumber } from '../api'
 import OptionOrderDialog, { type OptionDraft } from './OptionOrderDialog'
 import OptionPositions from './OptionPositions'
+import ClaudeSettings from './ClaudeSettings'
+import ClaudeAnalysis from './ClaudeAnalysis'
+import { analyzeOptionChain } from '../claudeAPI'
 import type { ExpiryCandidate, OptionChainResponse, OptionLeg } from '../types'
+import type { ClaudeAnalysisResult } from '../claudeAPI'
 
 // Index underlyings people actually trade options on, as Breeze codes.
 const UNDERLYINGS = ['NIFTY', 'CNXBAN', 'RELIND', 'TCS', 'INFTEC', 'HDFBAN']
@@ -94,6 +98,10 @@ export default function OptionChain({ mode }: { mode: string }) {
   const [draft, setDraft] = useState<OptionDraft | null>(null)
   // Bumped after a fill so the positions panel refetches.
   const [placed, setPlaced] = useState(0)
+  const [showClaudeSettings, setShowClaudeSettings] = useState(false)
+  const [claudeAnalysis, setClaudeAnalysis] = useState<ClaudeAnalysisResult | null>(null)
+  const [analyzingClaude, setAnalyzingClaude] = useState(false)
+  const [claudeError, setClaudeError] = useState<string | null>(null)
 
   // The ATM row, so the chain can open centred on it. A chain that opens at the
   // top of the strike range shows only deep in-the-money calls — technically
@@ -179,8 +187,75 @@ export default function OptionChain({ mode }: { mode: string }) {
     })
   }
 
+  const downloadChainCSV = () => {
+    if (!chain) return
+    let csv = 'Call LTP,Call Chg%,Call OI,Strike,Put LTP,Put Chg%,Put OI\n'
+    chain.rows.forEach((row) => {
+      const callLtp = row.call?.ltp ?? ''
+      const callChg = row.call?.change ?? ''
+      const callOI = row.call?.open_interest ?? ''
+      const putLtp = row.put?.ltp ?? ''
+      const putChg = row.put?.change ?? ''
+      const putOI = row.put?.open_interest ?? ''
+      csv += `${callLtp},${callChg},${callOI},${row.strike},${putLtp},${putChg},${putOI}\n`
+    })
+    downloadFile(csv, 'text/csv', `${chain.symbol}_chain_${chain.expiry}.csv`)
+  }
+
+  const downloadChainJSON = () => {
+    if (!chain) return
+    const json = JSON.stringify(chain, null, 2)
+    downloadFile(json, 'application/json', `${chain.symbol}_chain_${chain.expiry}.json`)
+  }
+
+  const downloadFile = (content: string, type: string, filename: string) => {
+    const blob = new Blob([content], { type })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
+  const handleAnalyzeWithClaude = async () => {
+    if (!chain) return
+    setAnalyzingClaude(true)
+    setClaudeError(null)
+    try {
+      const result = await analyzeOptionChain(chain)
+      setClaudeAnalysis(result)
+    } catch (err) {
+      setClaudeError((err as Error).message)
+    } finally {
+      setAnalyzingClaude(false)
+    }
+  }
+
+  const handleSelectSuggestedStrike = (strike: number, side: 'call' | 'put') => {
+    if (!chain) return
+    const row = chain.rows.find((r) => r.strike === strike)
+    if (!row) return
+
+    const leg = side === 'call' ? row.call : row.put
+    if (!leg?.ltp) return
+
+    setClaudeAnalysis(null)
+    openOrder(strike, side, leg.ltp, 'buy')
+  }
+
   return (
     <div className="grid" style={{ gap: 16 }}>
+      {showClaudeSettings && <ClaudeSettings onClose={() => setShowClaudeSettings(false)} />}
+      {claudeAnalysis && (
+        <ClaudeAnalysis
+          analysis={claudeAnalysis}
+          onClose={() => setClaudeAnalysis(null)}
+          onSelectStrike={handleSelectSuggestedStrike}
+        />
+      )}
       {draft && (
         <OptionOrderDialog
           draft={draft}
@@ -198,6 +273,20 @@ export default function OptionChain({ mode }: { mode: string }) {
       <div className="panel">
         <div className="panel-head">
           <span>Option Chain</span>
+          <div className="spacer" />
+          <button
+            title="Claude API Settings"
+            onClick={() => setShowClaudeSettings(true)}
+            style={{
+              background: 'none',
+              border: 'none',
+              fontSize: 18,
+              cursor: 'pointer',
+              padding: '4px 8px',
+            }}
+          >
+            ⚙️
+          </button>
         </div>
         <div className="panel-body">
           <div className="row">
@@ -229,6 +318,20 @@ export default function OptionChain({ mode }: { mode: string }) {
                 <span className="badge off">{chain.count} strikes</span>
                 <button onClick={() => setShowAll((v) => !v)}>
                   {showAll ? 'Near ATM only' : 'Show all'}
+                </button>
+                <button onClick={downloadChainCSV} title="Download as CSV">
+                  CSV
+                </button>
+                <button onClick={downloadChainJSON} title="Download as JSON">
+                  JSON
+                </button>
+                <button
+                  className="primary"
+                  onClick={handleAnalyzeWithClaude}
+                  disabled={analyzingClaude}
+                  title="Use Claude to analyze market movement and suggest strikes"
+                >
+                  {analyzingClaude ? 'Analyzing…' : '🤖 Claude AI'}
                 </button>
               </>
             )}
@@ -264,6 +367,20 @@ export default function OptionChain({ mode }: { mode: string }) {
               <strong>B</strong> buy · <strong>W</strong> write
             </span>
           </div>
+          {(claudeError || analyzingClaude) && (
+            <div className="panel-body" style={{ paddingBottom: 0 }}>
+              {claudeError && (
+                <div className="notice error" style={{ marginBottom: 0 }}>
+                  {claudeError}
+                </div>
+              )}
+              {analyzingClaude && (
+                <div className="notice info" style={{ marginBottom: 0 }}>
+                  Analyzing with Claude...
+                </div>
+              )}
+            </div>
+          )}
           <div className="panel-body flush">
             {rows.length === 0 ? (
               <div className="empty">
