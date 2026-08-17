@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, formatCurrency, formatNumber } from '../api'
-import type { Analysis } from '../types'
+import type { OrderPreview } from '../types'
 
 export interface OrderDraft {
   symbol: string
@@ -29,7 +29,7 @@ interface Props {
  * would not take is a visible, deliberate choice rather than an accident.
  */
 export default function OrderDialog({ draft, mode, onCancel, onConfirmed }: Props) {
-  const [plan, setPlan] = useState<Analysis | null>(null)
+  const [preview, setPreview] = useState<OrderPreview | null>(null)
   const [loading, setLoading] = useState(true)
   const [placing, setPlacing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -37,14 +37,14 @@ export default function OrderDialog({ draft, mode, onCancel, onConfirmed }: Prop
   useEffect(() => {
     let cancelled = false
     api
-      .analyse(draft.symbol)
-      .then((result) => !cancelled && setPlan(result))
+      .previewOrder(draft.symbol, draft.side, draft.product, draft.quantity)
+      .then((result) => !cancelled && setPreview(result))
       .catch((err: Error) => !cancelled && setError(err.message))
       .finally(() => !cancelled && setLoading(false))
     return () => {
       cancelled = true
     }
-  }, [draft.symbol])
+  }, [draft.symbol, draft.side, draft.product, draft.quantity])
 
   // Close on Escape — a dialog that can send a real order should always be
   // dismissible without hunting for the button.
@@ -76,16 +76,21 @@ export default function OrderDialog({ draft, mode, onCancel, onConfirmed }: Prop
   const isBuy = draft.side.toLowerCase() === 'buy'
   const isLive = mode === 'live'
 
+  const plan = preview
   // Quantity resolves server-side when left blank; show what the plan suggests.
-  const quantity = draft.quantity || plan?.plan.quantity || 0
-  const entry = plan?.plan.entry ?? 0
-  const notional = entry * quantity
-  const riskPerShare = plan ? Math.abs(entry - plan.plan.stoploss) : 0
+  const quantity = draft.quantity || preview?.plan.quantity || 0
+  const entry = preview?.plan.entry ?? 0
+  const riskPerShare = preview ? Math.abs(entry - preview.plan.stoploss) : 0
   const totalRisk = riskPerShare * quantity
+  const money = preview?.funds
 
   // Is this order fighting the engine's own read? A HOLD is not opposition —
   // it just means no signal — so only an opposite verdict counts.
-  const against = plan && plan.action !== 'hold' && plan.action !== draft.side.toLowerCase()
+  const against =
+    preview && preview.action !== 'hold' && preview.action !== draft.side.toLowerCase()
+  // A short releases proceeds rather than consuming cash, so the funds check
+  // does not apply to it.
+  const blockedByFunds = money && !money.affordable && isBuy
 
   return (
     <div className="modal-backdrop" onClick={() => !placing && onCancel()}>
@@ -128,8 +133,7 @@ export default function OrderDialog({ draft, mode, onCancel, onConfirmed }: Prop
                 <div className="notice info">
                   The engine would <strong>not</strong> open a position here — score{' '}
                   {plan.score >= 0 ? '+' : ''}
-                  {formatNumber(plan.score, 3)} against a ±
-                  {formatNumber(plan.entry_threshold, 2)} threshold ({plan.conviction}).
+                  {formatNumber(plan.score, 3)} ({plan.conviction}).
                 </div>
               )}
 
@@ -157,6 +161,16 @@ export default function OrderDialog({ draft, mode, onCancel, onConfirmed }: Prop
                 </div>
               </div>
 
+              {blockedByFunds && (
+                <div className="notice error">
+                  <strong>Not enough funds.</strong> This needs about{' '}
+                  {formatCurrency(money!.required)} but only{' '}
+                  {formatCurrency(money!.available)} is available — short by{' '}
+                  {formatCurrency(money!.shortfall)}. The largest affordable quantity is{' '}
+                  <strong>{money!.max_affordable_quantity}</strong>.
+                </div>
+              )}
+
               <dl className="kv">
                 <dt>Quantity</dt>
                 <dd>
@@ -170,7 +184,18 @@ export default function OrderDialog({ draft, mode, onCancel, onConfirmed }: Prop
                 </dd>
 
                 <dt>Order value</dt>
-                <dd>{formatCurrency(notional)}</dd>
+                <dd>{formatCurrency(money?.notional ?? entry * quantity)}</dd>
+
+                <dt>Estimated charges</dt>
+                <dd className="dim">{formatCurrency(money?.estimated_costs ?? 0)}</dd>
+
+                <dt>Funds needed</dt>
+                <dd>{formatCurrency(money?.required ?? 0)}</dd>
+
+                <dt>Funds available</dt>
+                <dd className={blockedByFunds ? 'neg' : 'pos'}>
+                  {formatCurrency(money?.available ?? 0)}
+                </dd>
 
                 <dt>Risk if stopped out</dt>
                 <dd className="neg">
@@ -223,7 +248,7 @@ export default function OrderDialog({ draft, mode, onCancel, onConfirmed }: Prop
           <button
             className={isLive ? 'danger' : 'primary'}
             onClick={confirm}
-            disabled={placing || loading || !plan || quantity < 1}
+            disabled={placing || loading || !preview || quantity < 1 || !!blockedByFunds}
           >
             {placing
               ? 'Placing…'

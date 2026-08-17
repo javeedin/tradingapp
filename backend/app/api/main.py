@@ -19,13 +19,20 @@ from app.broker.paper import PaperBroker
 from app.config import REPO_ROOT, settings
 from app.data.breeze_client import BreezeClient, BreezeError, login_url
 from app.data.expiry import expiry_candidates, to_breeze_expiry
+from app.data.funds import Funds, affordability, normalise_funds, paper_funds
 from app.data.store import MarketStore
 from app.data.ticker import LiveTicker
 from app.engine import monitor
 from app.engine.analysis import AnalysisError, analyse_symbol
 from app.engine.backtest import Backtester
 from app.engine.live import LiveTrader, is_market_open
-from app.models import DEFAULT_INTRADAY_PRODUCT, OrderStatus, ProductType, Side
+from app.models import (
+    DEFAULT_INTRADAY_PRODUCT,
+    Order,
+    OrderStatus,
+    ProductType,
+    Side,
+)
 from app.risk.manager import RiskManager
 from app.strategy.signals import SignalEngine
 
@@ -636,8 +643,90 @@ async def broker_positions() -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------
+# Funds
+# ----------------------------------------------------------------------
+def read_funds() -> Funds:
+    """Funds for the active mode.
+
+    Paper mode reports the simulated balance, because that is what constrains a
+    paper order. Live mode reports the broker's available margin. Reporting the
+    real balance while trading on paper would let the dashboard approve an order
+    the paper broker then refuses.
+    """
+    trader = get_trader()
+
+    if trader.broker.mode == "paper":
+        return paper_funds(trader.broker.cash)
+
+    try:
+        return normalise_funds(trader.client.get_funds())
+    except BreezeError as exc:
+        logger.error("Could not read funds: %s", exc)
+        return Funds(source="unavailable", raw={"error": str(exc)})
+
+
+@app.get("/api/funds")
+async def funds() -> dict[str, Any]:
+    """Account funds, plus the broker's real balance when a session exists."""
+    trader = get_trader()
+    active = await asyncio.to_thread(read_funds)
+
+    payload: dict[str, Any] = {
+        "funds": active.to_dict(),
+        "mode": trader.broker.mode,
+    }
+
+    # In paper mode the real balance is still useful context, so fetch it too —
+    # clearly separated so the two are never confused.
+    if trader.broker.mode == "paper" and trader.is_connected:
+        try:
+            broker_funds = await asyncio.to_thread(
+                lambda: normalise_funds(trader.client.get_funds())
+            )
+            payload["broker_funds"] = broker_funds.to_dict()
+        except BreezeError as exc:
+            payload["broker_funds_error"] = str(exc)
+
+    return payload
+
+
+# ----------------------------------------------------------------------
 # Manual orders
 # ----------------------------------------------------------------------
+@app.get("/api/orders")
+async def order_history(limit: int = 200, symbol: str | None = None) -> dict[str, Any]:
+    """Every order this app attempted, newest first, plus the broker's own list.
+
+    Rejections are included: "why did my order not go through" is the main
+    question this view exists to answer.
+    """
+    trader = get_trader()
+
+    payload: dict[str, Any] = {
+        "orders": trader.store.recent_orders(
+            limit=limit, mode=trader.broker.mode, symbol=symbol
+        ),
+        "stats": trader.store.order_stats(mode=trader.broker.mode),
+        "session_orders": [o.to_dict() for o in trader.broker.orders],
+        "mode": trader.broker.mode,
+    }
+
+    # The broker's list also shows orders placed elsewhere (the ICICI app or
+    # website), which this app never saw.
+    if trader.is_connected:
+        try:
+            payload["broker_orders"] = await asyncio.to_thread(
+                trader.client.get_order_list,
+                "NSE",
+                datetime.now() - timedelta(days=7),
+                datetime.now(),
+            )
+        except BreezeError as exc:
+            payload["broker_orders_error"] = str(exc)
+
+    return payload
+
+
 @app.get("/api/order-products")
 async def order_products() -> dict[str, Any]:
     """Which products can be traded through the API, and which cannot."""
@@ -722,6 +811,42 @@ async def place_order(request: PlaceOrderRequest) -> dict[str, Any]:
             detail=f"Quantity resolved to {quantity}. {plan['plan']['sizing_note']}",
         )
 
+    # Check funds before sending. The broker would refuse anyway, but its message
+    # says nothing about how much was short or what quantity would have fitted.
+    # Shorts are exempt: they release proceeds rather than consuming cash, and
+    # their margin requirement is not derivable from the notional alone.
+    account = await asyncio.to_thread(read_funds)
+    check = affordability(
+        account, quantity, entry, brokerage_pct=settings.brokerage_pct
+    )
+    if side is Side.BUY and not check["affordable"]:
+        message = (
+            f"Insufficient funds: {quantity} × ₹{entry:,.2f} needs about "
+            f"₹{check['required']:,.2f} but only ₹{check['available']:,.2f} is "
+            f"available — short by ₹{check['shortfall']:,.2f}. "
+            f"The largest affordable quantity is {check['max_affordable_quantity']}."
+        )
+        # Recorded even though the broker was never called: an order rejected on
+        # funds is exactly the kind of event the history needs to explain, and
+        # skipping it here would leave a silent gap.
+        trader.store.save_order(
+            Order(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                price=entry,
+                product=product,
+                timestamp=datetime.now(),
+                status=OrderStatus.REJECTED,
+                stoploss=stoploss,
+                target=target,
+                message=message,
+            ),
+            origin="manual",
+            mode=trader.broker.mode,
+        )
+        raise HTTPException(status_code=400, detail=message)
+
     place = trader.broker.buy if side is Side.BUY else trader.broker.sell
     order = await asyncio.to_thread(
         place,
@@ -732,6 +857,10 @@ async def place_order(request: PlaceOrderRequest) -> dict[str, Any]:
         target=target,
         product=product,
     )
+
+    # Recorded before the rejection check so failed attempts appear in history —
+    # that is precisely what makes the history diagnostic.
+    trader.store.save_order(order, origin="manual", mode=trader.broker.mode)
 
     if order.status is OrderStatus.REJECTED:
         raise HTTPException(status_code=400, detail=order.message)
@@ -758,6 +887,57 @@ async def place_order(request: PlaceOrderRequest) -> dict[str, Any]:
             "conviction": plan["conviction"],
             "reasons": plan["reasons"],
         },
+        "funds": check,
+    }
+
+
+@app.get("/api/orders/preview")
+async def preview_order(
+    symbol: str,
+    side: str = "buy",
+    product: str = "cash",
+    quantity: int = 0,
+) -> dict[str, Any]:
+    """Cost and affordability of a prospective order, without placing it.
+
+    Lets the confirmation dialog show whether the order actually fits before the
+    user commits, rather than discovering it in a rejection.
+    """
+    trader = get_trader()
+    resolved = ProductType.from_breeze(product)
+
+    try:
+        plan = await asyncio.to_thread(
+            analyse_symbol,
+            symbol,
+            trader.store,
+            trader.engine,
+            trader.risk,
+            client=trader.client if trader.is_connected else None,
+            broker=trader.broker,
+            product=resolved,
+        )
+    except AnalysisError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    entry = plan["plan"]["entry"]
+    qty = quantity or plan["plan"]["quantity"]
+    account = await asyncio.to_thread(read_funds)
+
+    return {
+        "symbol": plan["symbol"],
+        "side": side.lower(),
+        "product": resolved.value,
+        "placeable": resolved.placeable_via_api,
+        "plan": plan["plan"],
+        "action": plan["action"],
+        "conviction": plan["conviction"],
+        "score": plan["score"],
+        "reasons": plan["reasons"],
+        "funds": affordability(
+            account, qty, entry, brokerage_pct=settings.brokerage_pct
+        ),
+        "account": account.to_dict(),
     }
 
 

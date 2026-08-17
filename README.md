@@ -208,6 +208,32 @@ explicit `intraday` flag, not a property of the Breeze product. Deriving it from
 the product meant "trade intraday" implied the MARGIN product, which cannot be
 placed via the API at all.
 
+### Funds and order history
+
+The **Orders** tab shows account funds and every order this app attempted.
+
+Funds are reported for the **active mode**: paper mode shows the simulated
+balance, because that is what actually constrains a paper order, with the real
+ICICI balance displayed separately as context. Showing the real balance as *the*
+balance while trading on paper would let the dashboard approve an order the
+paper broker then refuses.
+
+Affordability is checked **before** an order is sent. The broker would refuse an
+unaffordable order anyway, but its message says neither how much was short nor
+what quantity would have fitted; this does both, and the confirm button stays
+disabled until the order fits. The check adds estimated brokerage plus a small
+slippage buffer on top of the notional, because a marketable limit fills through
+the touch — testing the bare notional approves orders that then fail for being a
+few rupees short. Shorts are exempt: they release proceeds rather than consuming
+cash.
+
+The history keeps **rejections as well as fills**, including orders refused on
+funds before the broker was ever called. "Why did my order not go through" is the
+question the view exists to answer, and a log of successes cannot answer it. When
+a Breeze session exists, the broker's own order book for the last 7 days is shown
+too — that includes orders placed in the ICICI app or website, which this app
+never saw.
+
 ### Analysing a single stock
 
 The **Analyse** tab answers "should I buy this, and where do I get out" for any

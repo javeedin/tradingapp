@@ -1,5 +1,8 @@
 import type {
   Analysis,
+  FundsResponse,
+  OrderHistoryResponse,
+  OrderPreview,
   BacktestResponse,
   BrokerPositionsResponse,
   CandleResponse,
@@ -80,6 +83,21 @@ export const api = {
   runCycle: () => request<Record<string, unknown>>('/cycle', { method: 'POST' }),
 
   ticker: () => request<{ quotes: Quote[]; status: TickerStatus }>('/ticker'),
+
+  funds: () => request<FundsResponse>('/funds'),
+
+  orderHistory: (limit = 200) =>
+    request<OrderHistoryResponse>(`/orders?limit=${limit}`),
+
+  previewOrder: (symbol: string, side: string, product: string, quantity = 0) => {
+    const params = new URLSearchParams({
+      symbol: symbol.toUpperCase(),
+      side,
+      product,
+      quantity: String(quantity),
+    })
+    return request<OrderPreview>(`/orders/preview?${params.toString()}`)
+  },
 
   brokerPositions: () => request<BrokerPositionsResponse>('/broker/positions'),
 

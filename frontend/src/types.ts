@@ -320,6 +320,84 @@ export interface PlaceOrderResponse {
   analysis: { action: string; score: number; conviction: string; reasons: string[] }
 }
 
+export interface Funds {
+  available: number
+  bank_balance: number
+  allocated_equity: number
+  allocated_fno: number
+  total_allocated: number
+  blocked: number
+  source: string
+  raw: Record<string, unknown>
+}
+
+export interface FundsResponse {
+  funds: Funds
+  mode: string
+  broker_funds?: Funds
+  broker_funds_error?: string
+}
+
+export interface Affordability {
+  quantity: number
+  price: number
+  notional: number
+  estimated_costs: number
+  buffer: number
+  required: number
+  available: number
+  affordable: boolean
+  shortfall: number
+  max_affordable_quantity: number
+}
+
+export interface OrderPreview {
+  symbol: string
+  side: string
+  product: string
+  placeable: boolean
+  plan: TradePlan
+  action: string
+  conviction: string
+  score: number
+  reasons: string[]
+  funds: Affordability
+  account: Funds
+}
+
+export interface OrderRecord {
+  order_id: string | null
+  symbol: string
+  side: string
+  quantity: number
+  price: number
+  product: string
+  status: string
+  stoploss: number | null
+  target: number | null
+  filled_price: number | null
+  filled_quantity: number
+  message: string | null
+  origin: string
+  mode: string
+  placed_at: string
+}
+
+export interface OrderHistoryResponse {
+  orders: OrderRecord[]
+  stats: {
+    total: number
+    filled: number
+    rejected: number
+    cancelled: number
+    pending: number
+  }
+  session_orders: unknown[]
+  mode: string
+  broker_orders?: Record<string, unknown>[]
+  broker_orders_error?: string
+}
+
 export interface BacktestResponse {
   stats: BacktestStats
   trades: Trade[]

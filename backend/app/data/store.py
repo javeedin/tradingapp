@@ -18,7 +18,7 @@ import duckdb
 import pandas as pd
 
 from app.config import settings
-from app.models import Candle, Signal, Trade
+from app.models import Candle, Order, Signal, Trade
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,27 @@ CREATE TABLE IF NOT EXISTS trades (
     created_at    TIMESTAMP DEFAULT current_timestamp
 );
 
+CREATE TABLE IF NOT EXISTS orders (
+    order_id      VARCHAR,
+    symbol        VARCHAR   NOT NULL,
+    side          VARCHAR   NOT NULL,
+    quantity      INTEGER   NOT NULL,
+    price         DOUBLE    NOT NULL,
+    product       VARCHAR   NOT NULL,
+    status        VARCHAR   NOT NULL,
+    stoploss      DOUBLE,
+    target        DOUBLE,
+    filled_price  DOUBLE,
+    filled_quantity INTEGER DEFAULT 0,
+    message       VARCHAR,
+    origin        VARCHAR   NOT NULL DEFAULT 'manual',
+    mode          VARCHAR   NOT NULL DEFAULT 'paper',
+    placed_at     TIMESTAMP NOT NULL,
+    created_at    TIMESTAMP DEFAULT current_timestamp
+);
+
 CREATE INDEX IF NOT EXISTS idx_candles_lookup ON candles (symbol, interval, timestamp);
+CREATE INDEX IF NOT EXISTS idx_orders_placed ON orders (placed_at);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals (symbol, timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_exit ON trades (exit_time);
 """
@@ -309,6 +329,96 @@ class MarketStore:
         with self._lock:
             frame = self._conn.execute(query, params).fetchdf()
         return frame.to_dict("records") if not frame.empty else []
+
+    # ------------------------------------------------------------------
+    # Orders
+    # ------------------------------------------------------------------
+    def save_order(
+        self, order: Order, origin: str = "manual", mode: str | None = None
+    ) -> None:
+        """Record an order attempt.
+
+        Rejections are stored too — "why didn't my order go through" is exactly
+        the question an order history needs to answer, and a log that only keeps
+        successes cannot.
+        """
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO orders (
+                    order_id, symbol, side, quantity, price, product, status,
+                    stoploss, target, filled_price, filled_quantity, message,
+                    origin, mode, placed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    order.order_id,
+                    order.symbol,
+                    order.side.value,
+                    order.quantity,
+                    order.price,
+                    order.product.value,
+                    order.status.value,
+                    order.stoploss,
+                    order.target,
+                    order.filled_price,
+                    order.filled_quantity,
+                    order.message,
+                    origin,
+                    mode or settings.trading_mode,
+                    order.timestamp,
+                ],
+            )
+
+    def recent_orders(
+        self, limit: int = 200, mode: str | None = None, symbol: str | None = None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+
+        if mode:
+            clauses.append("mode = ?")
+            params.append(mode)
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol.upper())
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+
+        with self._lock:
+            frame = self._conn.execute(
+                f"SELECT * FROM orders {where} ORDER BY placed_at DESC LIMIT ?", params
+            ).fetchdf()
+
+        return frame.to_dict("records") if not frame.empty else []
+
+    def order_stats(self, mode: str | None = None) -> dict[str, Any]:
+        where = "WHERE mode = ?" if mode else ""
+        params: list[Any] = [mode] if mode else []
+
+        with self._lock:
+            row = self._conn.execute(
+                f"""
+                SELECT
+                    COUNT(*)                                     AS total,
+                    COUNT(*) FILTER (WHERE status = 'filled')    AS filled,
+                    COUNT(*) FILTER (WHERE status = 'rejected')  AS rejected,
+                    COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+                    COUNT(*) FILTER (WHERE status = 'pending')   AS pending
+                FROM orders {where}
+                """,
+                params,
+            ).fetchone()
+
+        total, filled, rejected, cancelled, pending = row or (0, 0, 0, 0, 0)
+        return {
+            "total": int(total or 0),
+            "filled": int(filled or 0),
+            "rejected": int(rejected or 0),
+            "cancelled": int(cancelled or 0),
+            "pending": int(pending or 0),
+        }
 
     # ------------------------------------------------------------------
     # Trades

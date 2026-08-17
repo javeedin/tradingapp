@@ -11,6 +11,8 @@ from app.models import (
     Candle,
     ExitReason,
     FactorScores,
+    Order,
+    OrderStatus,
     ProductType,
     Side,
     Signal,
@@ -191,3 +193,70 @@ def test_context_manager_closes(tmp_path):
     with MarketStore(tmp_path / "ctx.duckdb") as s:
         s.save_candles("TEST", make_candles(3), "5minute")
         assert s.candle_count("TEST", "5minute") == 3
+
+
+# ----------------------------------------------------------------------
+# Orders
+# ----------------------------------------------------------------------
+def make_order(status: OrderStatus, symbol: str = "TEST", message: str = "") -> Order:
+    return Order(
+        symbol=symbol,
+        side=Side.BUY,
+        quantity=10,
+        price=1000.0,
+        product=ProductType.DELIVERY,
+        timestamp=datetime(2025, 1, 1, 10, 0),
+        order_id=f"ORD-{status.value}",
+        status=status,
+        stoploss=985.0,
+        target=1025.0,
+        message=message,
+    )
+
+
+def test_order_persistence(store):
+    store.save_order(make_order(OrderStatus.FILLED), mode="paper")
+    rows = store.recent_orders(mode="paper")
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "TEST"
+    assert rows[0]["status"] == "filled"
+    assert rows[0]["stoploss"] == pytest.approx(985.0)
+
+
+def test_rejected_orders_are_kept(store):
+    """"Why did my order not go through" is the question history must answer."""
+    store.save_order(
+        make_order(OrderStatus.REJECTED, message="Insufficient funds"), mode="paper"
+    )
+    rows = store.recent_orders(mode="paper")
+    assert rows[0]["status"] == "rejected"
+    assert "Insufficient funds" in rows[0]["message"]
+
+
+def test_order_stats_count_by_status(store):
+    for status in (OrderStatus.FILLED, OrderStatus.FILLED, OrderStatus.REJECTED):
+        store.save_order(make_order(status), mode="paper")
+
+    stats = store.order_stats(mode="paper")
+    assert stats["total"] == 3
+    assert stats["filled"] == 2
+    assert stats["rejected"] == 1
+
+
+def test_orders_filter_by_symbol(store):
+    store.save_order(make_order(OrderStatus.FILLED, symbol="AAA"), mode="paper")
+    store.save_order(make_order(OrderStatus.FILLED, symbol="BBB"), mode="paper")
+    assert len(store.recent_orders(symbol="AAA")) == 1
+
+
+def test_order_modes_are_isolated(store):
+    store.save_order(make_order(OrderStatus.FILLED), mode="paper")
+    store.save_order(make_order(OrderStatus.FILLED), mode="live")
+    assert store.order_stats(mode="paper")["total"] == 1
+    assert store.order_stats(mode="live")["total"] == 1
+    assert store.order_stats()["total"] == 2
+
+
+def test_order_stats_on_empty_table(store):
+    assert store.order_stats()["total"] == 0

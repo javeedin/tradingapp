@@ -4,6 +4,7 @@ import AnalysePanel from './components/AnalysePanel'
 import BacktestPanel from './components/BacktestPanel'
 import EventLog from './components/EventLog'
 import OptionChain from './components/OptionChain'
+import OrdersPanel from './components/OrdersPanel'
 import PositionsTable from './components/PositionsTable'
 import PriceChart from './components/PriceChart'
 import SessionPanel from './components/SessionPanel'
@@ -31,6 +32,7 @@ const TABS = [
   { id: 'live', label: 'Live' },
   { id: 'analyse', label: 'Analyse' },
   { id: 'trade', label: 'Trade' },
+  { id: 'orders', label: 'Orders' },
   { id: 'options', label: 'Options' },
   { id: 'backtest', label: 'Backtest' },
   { id: 'history', label: 'History' },
@@ -368,6 +370,8 @@ export default function App() {
       {tab === 'trade' && (
         <TradePanel universe={status?.symbols ?? []} mode={status?.mode ?? 'paper'} />
       )}
+
+      {tab === 'orders' && <OrdersPanel />}
 
       {tab === 'options' && <OptionChain />}
 
