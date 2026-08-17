@@ -95,9 +95,9 @@ export default function PriceChart({ symbol, symbols, onSymbolChange, theme }: P
       ema_20: colors.accent,
       ema_50: colors.amber,
       vwap: colors.faint,
-      rsi: colors.green,
-      adx: colors.up,
-      atr: colors.down,
+      rsi: colors.up,
+      adx: colors.down,
+      atr: colors.border,
     }
     return colorMap[indicator] || colors.accent
   }
@@ -235,12 +235,6 @@ export default function PriceChart({ symbol, symbols, onSymbolChange, theme }: P
       cancelled = true
     }
   }, [symbol, timeframe, enabledIndicators])
-
-  const getEnabledIndicatorLabels = () => {
-    return INDICATORS.filter((i) => enabledIndicators.has(i.id))
-      .map((i) => i.label)
-      .join(', ')
-  }
 
   return (
     <div className="panel">
