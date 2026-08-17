@@ -28,8 +28,14 @@ export async function analyzeOptionChain(
   })
 
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || 'Failed to analyze with Claude')
+    let errorDetail = 'Failed to analyze with Claude'
+    try {
+      const error = await response.json()
+      errorDetail = error.detail || JSON.stringify(error, null, 2)
+    } catch {
+      errorDetail = await response.text()
+    }
+    throw new Error(errorDetail)
   }
 
   const data = await response.json()
