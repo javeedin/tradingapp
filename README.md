@@ -275,12 +275,83 @@ slightly stale one — and polling keeps the tape moving regardless.
 > "unattributable tick" line: it prints a sample payload, which is all that is
 > needed to fix the field mapping.
 
-### Option chain
+### Option chain and option orders
 
 The **Options** tab shows calls and puts around the ATM strike for a chosen
-underlying and expiry. Expiry dates are offered as *candidates* only — NSE has
-changed index expiry weekdays more than once and holidays shift an expiry
-earlier, so Breeze's acceptance of the date is the real check.
+underlying and expiry, opening centred on the at-the-money row — a chain that
+opens at the bottom of its strike range shows only deep in-the-money calls,
+which is technically correct and practically useless. Expiry dates are offered
+as *candidates* only: NSE has changed index expiry weekdays more than once and
+holidays shift an expiry earlier, so Breeze's acceptance of the date is the real
+check.
+
+Every quoted leg has **B** (buy) and **W** (write) buttons. The order dialog
+prices in **lots**, not shares, because that is the only quantity Breeze
+accepts, and it makes a point of not treating a write as the mirror of a buy:
+
+| | Buying | Writing |
+|---|---|---|
+| Cost | the premium, and nothing more | margin against the *underlying* — many times the premium |
+| Maximum loss | the premium paid | unbounded |
+| Stoploss | below the premium | above it |
+| Target | above the premium | below it |
+
+Stops and targets are percentages of the **premium**, not of the underlying's
+ATR. A premium is a non-linear function of spot, so a spot-derived stop means
+nothing in the units that actually get filled. Defaults are 40% down / 80% up —
+wide by equity standards, because option premiums routinely swing 20% intraday
+on a move the underlying would call unremarkable.
+
+The margin figure shown for a write is an estimate at 15% of the strike value.
+The exchange sets the real number from its SPAN file and raises it when
+volatility rises, so a write that fits today may be short tomorrow.
+
+Option positions are keyed by contract, so a call and a put on the same strike
+are two positions and the whole existing lifecycle — close, kill switch,
+squareoff, trade history — applies unchanged. They get their own table (a
+premium and a share price do not belong in one column), and the order history
+has an equity/options filter.
+
+> Option premiums are re-quoted when the positions panel loads and on each
+> cycle. **Without a Breeze session they stay at the entry price, so option P&L
+> reads zero** — the panel says so rather than showing a flat line as if it were
+> real.
+
+### Settings
+
+The **Settings** tab changes the running engine rather than `.env`: a trading
+parameter you can only change by editing a file and restarting is one you will
+not change mid-session, and restarting drops the Breeze session. Changes are
+therefore lost on restart, by design.
+
+**Exit policy** is first and largest because it is the only setting that changes
+whether a losing trade has a floor at all. See [Risk model](#risk-model).
+
+**Robotic trading** has its switch in the top bar rather than buried here:
+arming it is the most consequential action in the app, so it has to be visible
+and reversible from wherever you are. Armed, each cycle ranks the universe and
+opens the strongest candidates on its own — capped at two per sector, because
+the top six by score are frequently six banks, which is one position at six
+times the size and no per-trade limit can see it.
+
+### Backtest
+
+The **Backtest** tab replays stored candles through the same signal engine and
+risk rules as live trading. It shows what history is actually stored first,
+because an empty backtest has two very different causes — the strategy found
+nothing worth trading, or there was nothing to look at — and the difference
+matters. Symbols short of the indicator warm-up are excluded by default and
+labelled with how many candles they still need.
+
+Two warnings are worth reading rather than dismissing:
+
+- **Requested window vs. stored sessions.** Asking for 120 days against 20
+  stored sessions is a 20-session backtest. Statistics over a window that short
+  are noise.
+- **Exit-policy mismatch.** The backtester models `stoploss only` and nothing
+  else. Under `capped averaging` or `average no stop` the numbers describe a
+  different strategy — averaging wins for long stretches and then loses much
+  more at once, and none of that shape appears in a stoploss-only replay.
 
 ### Themes
 
@@ -292,7 +363,7 @@ than keeping a second palette in sync by hand.
 ### Tests
 
 ```bash
-cd backend && pytest            # 115 tests
+cd backend && pytest            # 348 tests
 cd frontend && npm run build    # typecheck + build
 ```
 
@@ -362,10 +433,23 @@ than no backtest:
   opens well below it. Real losses can exceed the "fixed" per-trade risk.
 - **No trading-holiday calendar.** The engine relies on Breeze returning no
   candles on holidays.
-- **Options support is partial.** Order plumbing, lot-size rounding, and the
-  option-chain endpoint exist, but there is no greeks handling, no
-  expiry-roll logic, and no strike-selection strategy. Equities are the
-  well-trodden path.
+- **Options support is manual.** You can read the chain and place, monitor, and
+  close option orders, but there is no greeks handling, no expiry-roll logic, and
+  no strike-selection strategy — the robotic scanner trades equities only, and
+  picking the strike is your job. Two further gaps worth knowing:
+  - **Option stops are polled, not resting.** Between cycles the premium is
+    unobserved, so a level touched and left before the next quote is missed. In
+    live mode the exchange holds the stoploss order, but the *target* is polled
+    in both modes.
+  - **Written-option margin is an estimate**, not the exchange's SPAN figure. A
+    write that the affordability check approves can still be rejected by ICICI.
+- **`LOT_SIZES` is a hardcoded table.** The exchange revises contract sizes, and
+  a stale entry silently trades a different size than intended. It lives in
+  `models.py` as one table; verify it against the contract master before trusting
+  a size you have not traded before.
+- **The backtester models one exit policy.** `stoploss only`. Under either
+  averaging policy the reported numbers are about a different strategy — the
+  Backtest tab says so, in red.
 - **DuckDB is single-writer.** One process may open the database for writing. Do
   not run a backfill script while the API is running — the API owns the file.
 - **The API has no authentication.** It can place real orders. Bind it to
@@ -378,27 +462,35 @@ than no backtest:
 ```
 backend/app/
 ├── config.py              # settings, live-mode interlock
-├── models.py              # Candle, Signal, Order, Position, Trade
+├── models.py              # Candle, Signal, Order, Position, Trade, OptionContract
 ├── data/
 │   ├── breeze_client.py   # Breeze SDK wrapper, chunked backfill, session handling
+│   ├── expiry.py          # expiry candidates (Tuesdays; NIFTY-only weeklies)
+│   ├── funds.py           # funds normalisation and affordability
+│   ├── ticker.py          # live price feed: stream with polling fallback
 │   └── store.py           # DuckDB persistence
 ├── strategy/
 │   ├── indicators.py      # EMA, RSI, MACD, ATR, ADX, Bollinger, VWAP, Supertrend
 │   └── signals.py         # multi-factor scoring, regime gating
-├── risk/manager.py        # sizing, stops, trailing, daily limits
+├── risk/manager.py        # sizing, stops, trailing, daily limits, exit policy
 ├── broker/
 │   ├── base.py            # Broker interface
 │   ├── paper.py           # simulated fills
-│   └── breeze_broker.py   # live orders
+│   └── breeze_broker.py   # live orders (NSE cash and NFO)
 ├── engine/
+│   ├── analysis.py        # score one symbol on demand
 │   ├── backtest.py        # next-bar-open replay
+│   ├── monitor.py         # broker-side position normalisation
+│   ├── options.py         # option contracts, premium levels, order plans
+│   ├── scanner.py         # rank a universe, pick with sector caps
 │   └── live.py            # market-hours trading loop
 └── api/main.py            # FastAPI + WebSocket + scheduler
 
 frontend/src/
-├── App.tsx                # layout, polling, controls
+├── App.tsx                # layout, polling, robotic switch, grouped nav
 ├── api.ts, types.ts, theme.ts
-└── components/            # chart, positions, signals, trades, backtest, log
+└── components/            # chart, positions, signals, trades, orders,
+                           # option chain + option orders, settings, backtest
 
 desktop/
 ├── main.js                # Electron: spawns the backend, owns its lifecycle

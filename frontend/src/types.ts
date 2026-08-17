@@ -536,6 +536,26 @@ export type SettingsUpdate = Partial<{
   intraday: boolean
 }>
 
+export interface SymbolCoverage {
+  symbol: string
+  candles: number
+  first_candle: string
+  last_candle: string
+  trading_days: number
+}
+
+export interface DataCoverage {
+  interval: string
+  symbols: SymbolCoverage[]
+  total_candles: number
+  warmup_bars: number
+  ready: string[]
+  insufficient: string[]
+  watchlist: string[]
+  exit_policy: string
+  backtested_policy: string
+}
+
 export interface BacktestResponse {
   stats: BacktestStats
   trades: Trade[]

@@ -1,7 +1,123 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api, formatCurrency, formatNumber } from '../api'
-import type { BacktestResponse } from '../types'
+import type { BacktestResponse, DataCoverage } from '../types'
 import TradesTable from './TradesTable'
+
+function shortDate(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })
+}
+
+/**
+ * What history is actually stored.
+ *
+ * A backtest returning no trades has two very different causes — the strategy
+ * found nothing worth trading, or there was nothing to look at — and this is
+ * what tells them apart. Symbols short of the indicator warm-up are called out
+ * separately, because they cannot produce a signal at all.
+ */
+function Coverage({
+  coverage,
+  selected,
+  onToggle,
+}: {
+  coverage: DataCoverage
+  selected: Set<string>
+  onToggle: (symbol: string) => void
+}) {
+  if (coverage.symbols.length === 0) {
+    return (
+      <div className="notice warn">
+        <strong>No stored candles.</strong> Establish a Breeze session on the Live tab —
+        the backfill runs automatically once a session exists, and a backtest has nothing
+        to replay until it has.
+      </div>
+    )
+  }
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <span>Stored history</span>
+        <span className="badge off">{coverage.total_candles.toLocaleString('en-IN')} candles</span>
+        <span className="badge off">{coverage.interval}</span>
+        {coverage.insufficient.length > 0 && (
+          <span className="badge warn">
+            {coverage.insufficient.length} short of warm-up
+          </span>
+        )}
+        <div className="spacer" />
+        <span className="dim" style={{ fontSize: 11, fontWeight: 400 }}>
+          click a row to include or exclude it
+        </span>
+      </div>
+      <div className="panel-body flush">
+        <div className="table-scroll" style={{ maxHeight: 300 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th className="num">Candles</th>
+                <th className="num">Sessions</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {coverage.symbols.map((row) => {
+                const ready = row.candles >= coverage.warmup_bars
+                const on = selected.has(row.symbol)
+                return (
+                  <tr
+                    key={row.symbol}
+                    onClick={() => onToggle(row.symbol)}
+                    style={{
+                      cursor: 'pointer',
+                      opacity: on ? 1 : 0.45,
+                    }}
+                  >
+                    <td style={{ fontWeight: 600 }}>
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        readOnly
+                        style={{ marginRight: 8, verticalAlign: 'middle' }}
+                      />
+                      {row.symbol}
+                    </td>
+                    <td className="num">{row.candles.toLocaleString('en-IN')}</td>
+                    <td className="num">{row.trading_days}</td>
+                    <td className="dim" style={{ fontSize: 12 }}>
+                      {shortDate(row.first_candle)}
+                    </td>
+                    <td className="dim" style={{ fontSize: 12 }}>
+                      {shortDate(row.last_candle)}
+                    </td>
+                    <td>
+                      {ready ? (
+                        <span className="badge ok">ready</span>
+                      ) : (
+                        <span
+                          className="badge warn"
+                          title={`${coverage.warmup_bars} candles are needed before the indicators produce a signal`}
+                        >
+                          needs {coverage.warmup_bars - row.candles} more
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 /** Minimal inline equity curve — no charting library needed for a sparkline. */
 function EquityCurve({ points }: { points: { timestamp: string; equity: number }[] }) {
@@ -63,6 +179,34 @@ export default function BacktestPanel({ symbols }: { symbols: string[] }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BacktestResponse | null>(null)
+  const [coverage, setCoverage] = useState<DataCoverage | null>(null)
+  const [selected, setSelected] = useState<Set<string> | null>(null)
+
+  const loadCoverage = useCallback(async () => {
+    try {
+      const data = await api.dataCoverage()
+      setCoverage(data)
+      // Default to what can actually produce a signal, rather than to everything
+      // stored — including a warm-up-short symbol just adds a silent no-op.
+      setSelected((current) => current ?? new Set(data.ready))
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadCoverage()
+  }, [loadCoverage])
+
+  const toggle = (symbol: string) =>
+    setSelected((current) => {
+      const next = new Set(current ?? [])
+      if (next.has(symbol)) next.delete(symbol)
+      else next.add(symbol)
+      return next
+    })
+
+  const chosen = [...(selected ?? new Set(symbols))]
 
   const run = async () => {
     setBusy(true)
@@ -71,11 +215,13 @@ export default function BacktestPanel({ symbols }: { symbols: string[] }) {
       setResult(
         await api.backtest({
           days,
-          symbols,
+          symbols: chosen,
           intraday,
           entry_threshold: threshold,
         }),
       )
+      // History grows as the engine runs, so refresh the scope alongside.
+      await loadCoverage()
     } catch (err) {
       setError((err as Error).message)
       setResult(null)
@@ -85,12 +231,22 @@ export default function BacktestPanel({ symbols }: { symbols: string[] }) {
   }
 
   const stats = result?.stats
+  const policyMismatch =
+    coverage && coverage.exit_policy !== coverage.backtested_policy
+
+  // The requested window can far exceed what is stored, in which case the
+  // backtest silently covers less than it appears to.
+  const maxSessions = coverage?.symbols.reduce((m, r) => Math.max(m, r.trading_days), 0) ?? 0
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <div className="panel">
         <div className="panel-head">
           <span>Backtest</span>
+          <div className="spacer" />
+          <span className="dim" style={{ fontSize: 11, fontWeight: 400 }}>
+            {chosen.length} symbol(s) selected
+          </span>
         </div>
         <div className="panel-body">
           <div className="notice info">
@@ -98,6 +254,19 @@ export default function BacktestPanel({ symbols }: { symbols: string[] }) {
             risk rules as live trading. Results exclude liquidity, partial fills, and statutory
             charges beyond brokerage — treat them as an upper bound, not a forecast.
           </div>
+
+          {/* The single most misleading thing this panel could do is report
+              stoploss-only numbers while the engine is set to average down. */}
+          {policyMismatch && (
+            <div className="notice error">
+              <strong>These results will not describe your strategy.</strong> The engine's
+              exit policy is <code>{coverage!.exit_policy.replace(/_/g, ' ')}</code>, but the
+              backtester only models <code>stoploss only</code>. Averaging down changes
+              both the win rate and the shape of the losses — it wins for long stretches
+              and then loses much more at once, and none of that appears below. Switch the
+              policy on the Settings tab to compare like with like.
+            </div>
+          )}
 
           <div className="row">
             <label className="dim">
@@ -132,18 +301,37 @@ export default function BacktestPanel({ symbols }: { symbols: string[] }) {
               Intraday (square off daily)
             </label>
             <div className="spacer" />
-            <button className="primary" onClick={run} disabled={busy}>
+            <button onClick={loadCoverage} disabled={busy}>
+              Refresh data
+            </button>
+            <button className="primary" onClick={run} disabled={busy || chosen.length === 0}>
               {busy ? 'Running…' : 'Run backtest'}
             </button>
           </div>
 
+          {maxSessions > 0 && days > maxSessions && (
+            <div className="notice warn" style={{ marginTop: 12, marginBottom: 0 }}>
+              You asked for {days} days but only {maxSessions} trading session(s) are
+              stored, so this is a {maxSessions}-session backtest. Statistics over a
+              window this short are noise, not evidence.
+            </div>
+          )}
+
           {error && (
-            <div className="notice error" style={{ marginTop: 12 }}>
+            <div className="notice error" style={{ marginTop: 12, marginBottom: 0 }}>
               {error}
             </div>
           )}
         </div>
       </div>
+
+      {coverage && (
+        <Coverage
+          coverage={coverage}
+          selected={selected ?? new Set(symbols)}
+          onToggle={toggle}
+        />
+      )}
 
       {stats && (
         <>

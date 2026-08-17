@@ -6,6 +6,7 @@ import type {
   BacktestResponse,
   BrokerPositionsResponse,
   CandleResponse,
+  DataCoverage,
   EngineEvent,
   ExpiryCandidate,
   OptionChainResponse,
@@ -147,6 +148,8 @@ export const api = {
   },
 
   settings: () => request<RuntimeSettings>('/settings'),
+
+  dataCoverage: () => request<DataCoverage>('/data-coverage'),
 
   updateSettings: (payload: SettingsUpdate) =>
     request<RuntimeSettings>('/settings', {

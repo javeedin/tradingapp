@@ -43,6 +43,7 @@ from app.models import (
     lot_size_for,
 )
 from app.risk.manager import RiskManager
+from app.strategy import indicators
 from app.strategy.signals import SignalEngine
 
 logging.basicConfig(
@@ -438,9 +439,7 @@ async def candles(symbol: str, limit: int = 300, interval: str | None = None) ->
     if frame.empty:
         return {"symbol": symbol.upper(), "candles": [], "indicators": []}
 
-    from app.strategy import indicators as ind
-
-    enriched = ind.enrich(frame)
+    enriched = indicators.enrich(frame)
 
     def series(column: str) -> list[dict[str, Any]]:
         if column not in enriched.columns:
@@ -1393,6 +1392,31 @@ async def run_cycle_now() -> dict[str, Any]:
 # ----------------------------------------------------------------------
 # Backtesting
 # ----------------------------------------------------------------------
+@app.get("/api/data-coverage")
+async def data_coverage(interval: str | None = None) -> dict[str, Any]:
+    """What history is stored, so a backtest's scope is knowable before it runs."""
+    trader = get_trader()
+    resolved = interval or settings.candle_interval
+    rows = trader.store.coverage(resolved)
+    warmup = indicators.warmup_period()
+
+    return {
+        "interval": resolved,
+        "symbols": rows,
+        "total_candles": sum(r["candles"] for r in rows),
+        # A symbol with fewer candles than the indicator warm-up cannot produce a
+        # signal at all, which is the most common reason for an empty backtest.
+        "warmup_bars": warmup,
+        "ready": [r["symbol"] for r in rows if r["candles"] >= warmup],
+        "insufficient": [r["symbol"] for r in rows if r["candles"] < warmup],
+        "watchlist": trader.symbols,
+        # Named separately: the backtester only models the stoploss-only policy,
+        # so results describe a different strategy under any other policy.
+        "exit_policy": trader.risk.exit_policy.value,
+        "backtested_policy": ExitPolicy.STOP_ONLY.value,
+    }
+
+
 @app.post("/api/backtest")
 async def run_backtest(request: BacktestRequest) -> dict[str, Any]:
     """Backtest the strategy over stored history."""

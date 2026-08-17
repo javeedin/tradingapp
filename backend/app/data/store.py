@@ -289,6 +289,48 @@ class MarketStore:
             ).fetchall()
         return [r[0] for r in rows]
 
+    def coverage(
+        self, interval: str, exchange: str = "NSE"
+    ) -> list[dict[str, Any]]:
+        """What history is actually stored, per symbol.
+
+        A backtest that finds no trades has two very different causes — the
+        strategy saw nothing worth trading, or there was nothing to see — and
+        without this the two are indistinguishable. Trading days are counted
+        rather than calendar days, since a 60-day window over 20 stored sessions
+        is a 20-session backtest whatever the request said.
+        """
+        with self._lock:
+            frame = self._conn.execute(
+                """
+                SELECT
+                    symbol,
+                    COUNT(*)                         AS candles,
+                    MIN(timestamp)                   AS first_candle,
+                    MAX(timestamp)                   AS last_candle,
+                    COUNT(DISTINCT CAST(timestamp AS DATE)) AS trading_days
+                FROM candles
+                WHERE interval = ? AND exchange = ?
+                GROUP BY symbol
+                ORDER BY symbol
+                """,
+                [interval, exchange],
+            ).fetchdf()
+
+        if frame.empty:
+            return []
+
+        return [
+            {
+                "symbol": row["symbol"],
+                "candles": int(row["candles"]),
+                "first_candle": row["first_candle"].isoformat(),
+                "last_candle": row["last_candle"].isoformat(),
+                "trading_days": int(row["trading_days"]),
+            }
+            for _, row in frame.iterrows()
+        ]
+
     # ------------------------------------------------------------------
     # Signals
     # ------------------------------------------------------------------

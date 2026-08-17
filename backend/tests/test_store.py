@@ -20,6 +20,8 @@ from app.models import (
     Trade,
 )
 
+from .conftest import make_ohlcv
+
 
 @pytest.fixture
 def store(tmp_path) -> MarketStore:
@@ -285,3 +287,39 @@ def test_computed_return_survives_a_zero_cost_basis(store):
     trade.entry_price = 0.0
     store.save_trade(trade, mode="paper")
     assert store.recent_trades(mode="paper")[0]["return_pct"] == 0
+
+
+# ----------------------------------------------------------------------
+# Coverage
+# ----------------------------------------------------------------------
+def test_coverage_reports_what_is_actually_stored(store):
+    """An empty backtest has two causes; this is what tells them apart."""
+    frame = make_ohlcv(bars=150)
+    store.save_candles(
+        "AAA",
+        [Candle(ts, r.open, r.high, r.low, r.close, r.volume) for ts, r in frame.iterrows()],
+        "5minute",
+    )
+
+    rows = store.coverage("5minute")
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "AAA"
+    assert rows[0]["candles"] == 150
+    # 75 bars per session in the fixture, so 150 bars is two sessions.
+    assert rows[0]["trading_days"] == 2
+    assert rows[0]["first_candle"] < rows[0]["last_candle"]
+
+
+def test_coverage_is_empty_rather_than_erroring_on_a_fresh_store(store):
+    assert store.coverage("5minute") == []
+
+
+def test_coverage_ignores_other_intervals(store):
+    frame = make_ohlcv(bars=80)
+    store.save_candles(
+        "AAA",
+        [Candle(ts, r.open, r.high, r.low, r.close, r.volume) for ts, r in frame.iterrows()],
+        "5minute",
+    )
+    assert store.coverage("30minute") == []
