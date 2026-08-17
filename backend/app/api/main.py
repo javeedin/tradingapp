@@ -1472,6 +1472,45 @@ async def resume() -> dict[str, Any]:
     return {"halted": False, "message": "Trading resumed"}
 
 
+@app.get("/api/server/status")
+async def server_status() -> dict[str, Any]:
+    """Get the status of background services."""
+    scheduler = state.get("scheduler")
+    is_running = scheduler is not None and scheduler.running
+    return {
+        "running": is_running,
+        "message": "Server is running" if is_running else "Server is stopped"
+    }
+
+
+@app.post("/api/server/start")
+async def server_start() -> dict[str, Any]:
+    """Start the background trading cycle."""
+    scheduler = state.get("scheduler")
+    if scheduler is None:
+        raise HTTPException(status_code=500, detail="Scheduler not initialized")
+
+    if scheduler.running:
+        return {"running": True, "message": "Server is already running"}
+
+    scheduler.resume()
+    return {"running": True, "message": "Server started successfully"}
+
+
+@app.post("/api/server/stop")
+async def server_stop() -> dict[str, Any]:
+    """Stop the background trading cycle."""
+    scheduler = state.get("scheduler")
+    if scheduler is None:
+        raise HTTPException(status_code=500, detail="Scheduler not initialized")
+
+    if not scheduler.running:
+        return {"running": False, "message": "Server is already stopped"}
+
+    scheduler.pause()
+    return {"running": False, "message": "Server stopped successfully"}
+
+
 @app.post("/api/positions/close")
 async def close_position(request: ClosePositionRequest) -> dict[str, Any]:
     trader = get_trader()

@@ -7,6 +7,7 @@ import OptionChain from './components/OptionChain'
 import OrdersPanel from './components/OrdersPanel'
 import PositionsTable from './components/PositionsTable'
 import PriceChart from './components/PriceChart'
+import ServerControl from './components/ServerControl'
 import SessionPanel from './components/SessionPanel'
 import SettingsPanel from './components/SettingsPanel'
 import SignalsPanel from './components/SignalsPanel'
@@ -412,12 +413,15 @@ export default function App() {
 
       {tab === 'live' && (
         <div className="grid" style={{ gap: 16 }}>
-          <SessionPanel
-            connected={status?.connected ?? false}
-            loginUrl={status?.login_url}
-            sessionAgeHours={status?.session_age_hours ?? null}
-            onConnected={refresh}
-          />
+          <div className="grid grid-2">
+            <SessionPanel
+              connected={status?.connected ?? false}
+              loginUrl={status?.login_url}
+              sessionAgeHours={status?.session_age_hours ?? null}
+              onConnected={refresh}
+            />
+            <ServerControl />
+          </div>
 
           <div className="grid grid-2">
             <div className="grid" style={{ gap: 16 }}>

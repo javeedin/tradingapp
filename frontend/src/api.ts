@@ -191,6 +191,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+
+  serverStatus: () =>
+    request<{ running: boolean; message: string }>('/server/status'),
+
+  serverStart: () =>
+    request<{ running: boolean; message: string }>('/server/start', { method: 'POST' }),
+
+  serverStop: () =>
+    request<{ running: boolean; message: string }>('/server/stop', { method: 'POST' }),
 }
 
 export function formatCurrency(value: number): string {
