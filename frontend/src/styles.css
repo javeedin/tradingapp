@@ -713,3 +713,34 @@ code {
 a {
   color: var(--accent);
 }
+
+/* ---------- Option chain strike column ---------- */
+.strike-cell {
+  font-weight: 700;
+  background: var(--panel-alt);
+  /* Sticky so the strike stays visible while scrolling the wide chain
+     horizontally — it is the column every other cell is read against. */
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  box-shadow: 1px 0 0 var(--border), -1px 0 0 var(--border);
+}
+
+.strike-atm {
+  font-size: 9px;
+  font-weight: 700;
+  margin-left: 5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: #fff;
+  vertical-align: middle;
+}
+
+.strike-moneyness {
+  display: block;
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}

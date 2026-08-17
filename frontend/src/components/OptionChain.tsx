@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, formatNumber } from '../api'
 import type { ExpiryCandidate, OptionChainResponse, OptionLeg } from '../types'
 
@@ -61,6 +61,11 @@ export default function OptionChain() {
   const [error, setError] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
 
+  // The ATM row, so the chain can open centred on it. A chain that opens at the
+  // top of the strike range shows only deep in-the-money calls — technically
+  // correct and practically useless, since nobody trades the far wings.
+  const atmRowRef = useRef<HTMLTableRowElement>(null)
+
   // Refetched per underlying: only NIFTY still has weekly contracts, so the
   // candidate list differs by symbol.
   useEffect(() => {
@@ -110,6 +115,17 @@ export default function OptionChain() {
       atmIndex + STRIKE_WINDOW + 1,
     )
   }
+
+  // Centre the ATM row once the chain renders. Runs on chain/showAll change
+  // rather than on every render so it never fights the user's own scrolling.
+  useEffect(() => {
+    if (!chain || atmStrike === null) return
+    // A frame's delay lets the rows commit before scrolling to one of them.
+    const id = requestAnimationFrame(() => {
+      atmRowRef.current?.scrollIntoView({ block: 'center', behavior: 'auto' })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [chain, atmStrike, showAll])
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -174,6 +190,9 @@ export default function OptionChain() {
               {chain.symbol} · {new Date(chain.expiry).toLocaleDateString('en-IN')}
             </span>
             <div className="spacer" />
+            {atmStrike !== null && (
+              <span className="badge ok">ATM {formatNumber(atmStrike, 0)}</span>
+            )}
             <span className="dim" style={{ fontWeight: 400, fontSize: 11 }}>
               <span className="pos">calls</span> left · <span className="neg">puts</span> right
             </span>
@@ -211,31 +230,33 @@ export default function OptionChain() {
                   <tbody>
                     {rows.map((row) => {
                       const isAtm = row.strike === atmStrike
+                      // Label which side of the money each strike sits on, so the
+                      // chain reads without mentally comparing every row to spot.
+                      const moneyness =
+                        spot === null
+                          ? ''
+                          : row.strike > spot
+                            ? 'OTM call'
+                            : 'ITM call'
                       return (
                         <tr
                           key={row.strike}
+                          ref={isAtm ? atmRowRef : undefined}
                           style={
                             isAtm
                               ? {
-                                  outline: '1px solid var(--accent)',
+                                  outline: '2px solid var(--accent)',
                                   background: 'var(--info-bg)',
                                 }
                               : undefined
                           }
                         >
                           <LegCells leg={row.call} side="call" />
-                          <td
-                            className="num"
-                            style={{ fontWeight: 700, background: 'var(--panel-alt)' }}
-                          >
+                          <td className="num strike-cell">
                             {formatNumber(row.strike, 0)}
-                            {isAtm && (
-                              <span
-                                className="dim"
-                                style={{ fontSize: 9, marginLeft: 4, fontWeight: 400 }}
-                              >
-                                ATM
-                              </span>
+                            {isAtm && <span className="strike-atm">ATM</span>}
+                            {!isAtm && moneyness && (
+                              <span className="strike-moneyness">{moneyness}</span>
                             )}
                           </td>
                           <LegCells leg={row.put} side="put" />
