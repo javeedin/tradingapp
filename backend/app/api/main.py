@@ -28,6 +28,7 @@ from app.engine.backtest import Backtester
 from app.engine.live import LiveTrader, is_market_open
 from app.models import (
     DEFAULT_INTRADAY_PRODUCT,
+    ExitPolicy,
     Order,
     OrderStatus,
     ProductType,
@@ -228,6 +229,35 @@ class BacktestRequest(BaseModel):
     starting_capital: float | None = Field(default=None, gt=0)
     entry_threshold: float | None = Field(default=None, ge=0, le=1)
     intraday: bool = True
+
+
+class SettingsUpdate(BaseModel):
+    """Every field optional: a PUT changes only what it names."""
+
+    exit_policy: str | None = None
+
+    risk_per_trade_pct: float | None = Field(default=None, gt=0, le=100)
+    max_daily_loss_pct: float | None = Field(default=None, gt=0, le=100)
+    max_open_positions: int | None = Field(default=None, ge=1, le=50)
+    max_position_pct: float | None = Field(default=None, gt=0, le=1000)
+    atr_stop_multiplier: float | None = Field(default=None, gt=0, le=20)
+    atr_target_multiplier: float | None = Field(default=None, gt=0, le=50)
+    use_trailing_stop: bool | None = None
+    trail_atr_multiplier: float | None = Field(default=None, gt=0, le=20)
+
+    max_adds: int | None = Field(default=None, ge=0, le=20)
+    add_trigger_atr: float | None = Field(default=None, gt=0, le=20)
+    max_symbol_exposure_pct: float | None = Field(default=None, gt=0, le=1000)
+
+    entry_threshold: float | None = Field(default=None, ge=0, le=1)
+    exit_threshold: float | None = Field(default=None, ge=-1, le=1)
+    allow_shorts: bool | None = None
+
+    robotic_trading: bool | None = None
+    robotic_max_positions: int | None = Field(default=None, ge=1, le=50)
+    robotic_universe_size: int | None = Field(default=None, ge=1, le=200)
+
+    intraday: bool | None = None
 
 
 class PlaceOrderRequest(BaseModel):
@@ -643,6 +673,158 @@ async def broker_positions() -> dict[str, Any]:
         "count": len(described),
         "raw_rows": len(rows),
     }
+
+
+# ----------------------------------------------------------------------
+# Runtime settings
+# ----------------------------------------------------------------------
+def settings_payload() -> dict[str, Any]:
+    """Current tunables plus the choices available for each."""
+    trader = get_trader()
+    risk = trader.risk
+
+    return {
+        "exit_policy": {
+            "value": risk.exit_policy.value,
+            "options": [
+                {
+                    "value": p.value,
+                    "label": p.label,
+                    "note": p.risk_note,
+                    "has_stoploss": p.has_stoploss,
+                    "averages_down": p.averages_down,
+                }
+                for p in ExitPolicy
+            ],
+        },
+        "risk": {
+            "risk_per_trade_pct": risk.risk_per_trade_pct,
+            "max_daily_loss_pct": risk.max_daily_loss_pct,
+            "max_open_positions": risk.max_open_positions,
+            "max_position_pct": risk.max_position_pct,
+            "atr_stop_multiplier": risk.atr_stop_multiplier,
+            "atr_target_multiplier": risk.atr_target_multiplier,
+            "use_trailing_stop": risk.use_trailing_stop,
+            "trail_atr_multiplier": risk.trail_atr_multiplier,
+        },
+        "averaging": {
+            "max_adds": risk.max_adds,
+            "add_trigger_atr": risk.add_trigger_atr,
+            "max_symbol_exposure_pct": risk.max_symbol_exposure_pct,
+        },
+        "signals": {
+            "entry_threshold": trader.engine.entry_threshold,
+            "exit_threshold": trader.engine.exit_threshold,
+            "allow_shorts": trader.engine.allow_shorts,
+        },
+        "robotic": {
+            "enabled": trader.robotic_trading,
+            "max_positions": trader.robotic_max_positions,
+            "universe_size": trader.robotic_universe_size,
+        },
+        "session": {
+            "mode": trader.broker.mode,
+            "intraday": trader.intraday,
+            "interval": trader.interval,
+            "symbols": trader.symbols,
+        },
+        "note": (
+            "Changes apply immediately to the running engine and are not written "
+            "to .env, so a restart returns to the file's values."
+        ),
+    }
+
+
+@app.get("/api/settings")
+async def get_runtime_settings() -> dict[str, Any]:
+    return settings_payload()
+
+
+@app.put("/api/settings")
+async def update_runtime_settings(request: SettingsUpdate) -> dict[str, Any]:
+    """Change tunables on the running engine.
+
+    Applied in place rather than written to .env: a trading parameter you can
+    only change by editing a file and restarting is one you will not change
+    mid-session, and restarting drops the Breeze session.
+    """
+    trader = get_trader()
+    risk = trader.risk
+    changes: list[str] = []
+
+    if request.exit_policy is not None:
+        try:
+            policy = ExitPolicy(request.exit_policy)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown exit policy '{request.exit_policy}'",
+            ) from exc
+
+        if policy is not risk.exit_policy:
+            previous = risk.exit_policy
+            risk.exit_policy = policy
+            changes.append(f"exit policy {previous.value} -> {policy.value}")
+            # Switching to a policy without a stop leaves existing positions
+            # holding stale levels, so say so rather than letting it be silent.
+            if not policy.has_stoploss and trader.broker.open_position_count:
+                trader._log_event(
+                    "policy",
+                    f"Exit policy set to {policy.label} with "
+                    f"{trader.broker.open_position_count} position(s) open — their "
+                    "stoplosses will no longer be acted on.",
+                )
+
+    for field, attr in (
+        ("risk_per_trade_pct", "risk_per_trade_pct"),
+        ("max_daily_loss_pct", "max_daily_loss_pct"),
+        ("max_open_positions", "max_open_positions"),
+        ("max_position_pct", "max_position_pct"),
+        ("atr_stop_multiplier", "atr_stop_multiplier"),
+        ("atr_target_multiplier", "atr_target_multiplier"),
+        ("use_trailing_stop", "use_trailing_stop"),
+        ("trail_atr_multiplier", "trail_atr_multiplier"),
+        ("max_adds", "max_adds"),
+        ("add_trigger_atr", "add_trigger_atr"),
+        ("max_symbol_exposure_pct", "max_symbol_exposure_pct"),
+    ):
+        value = getattr(request, field)
+        if value is not None and getattr(risk, attr) != value:
+            changes.append(f"{field} {getattr(risk, attr)} -> {value}")
+            setattr(risk, attr, value)
+
+    if request.entry_threshold is not None:
+        trader.engine.entry_threshold = request.entry_threshold
+        changes.append(f"entry threshold -> {request.entry_threshold}")
+    if request.exit_threshold is not None:
+        trader.engine.exit_threshold = request.exit_threshold
+        changes.append(f"exit threshold -> {request.exit_threshold}")
+    if request.allow_shorts is not None:
+        trader.engine.allow_shorts = request.allow_shorts
+        changes.append(f"shorts {'enabled' if request.allow_shorts else 'disabled'}")
+
+    if request.robotic_trading is not None:
+        trader.set_robotic_trading(request.robotic_trading)
+        changes.append(
+            f"robotic trading {'ARMED' if request.robotic_trading else 'disarmed'}"
+        )
+    if request.robotic_max_positions is not None:
+        trader.robotic_max_positions = request.robotic_max_positions
+        changes.append(f"robotic max positions -> {request.robotic_max_positions}")
+    if request.robotic_universe_size is not None:
+        trader.robotic_universe_size = request.robotic_universe_size
+        changes.append(f"robotic universe -> {request.robotic_universe_size}")
+
+    if request.intraday is not None:
+        trader.intraday = request.intraday
+        changes.append(f"intraday {'on' if request.intraday else 'off'}")
+
+    if changes:
+        trader._log_event("settings", "; ".join(changes))
+
+    payload = settings_payload()
+    payload["changes"] = changes
+    return payload
 
 
 # ----------------------------------------------------------------------

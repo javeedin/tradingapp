@@ -25,6 +25,7 @@ from app.broker.paper import PaperBroker
 from app.config import settings
 from app.data.breeze_client import BreezeClient, BreezeError, SessionExpiredError
 from app.data.store import MarketStore
+from app.engine.scanner import Scanner
 from app.models import (
     DEFAULT_INTRADAY_PRODUCT,
     ExitReason,
@@ -92,6 +93,12 @@ class LiveTrader:
         self.intraday = intraday
         self.interval = settings.candle_interval
         self.benchmark_code = settings.benchmark_code
+
+        # Robotic (automated) trading is armed explicitly, never by default: the
+        # engine placing orders on its own must be a deliberate act.
+        self.robotic_trading = settings.robotic_trading
+        self.robotic_max_positions = settings.robotic_max_positions
+        self.robotic_universe_size = settings.robotic_universe_size
 
         self._running = False
         self._lock = threading.Lock()
@@ -234,21 +241,28 @@ class LiveTrader:
             self._last_cycle = now
             return outcome
 
-        # 5. Score the universe and act.
+        # 5. Score and act.
         benchmark = self._context(self.benchmark_code)
         bench_frame = benchmark if not benchmark.empty else None
 
-        for symbol in self.symbols:
-            try:
-                action = self._process_symbol(symbol, bench_frame, now)
-                if action:
-                    outcome["actions"].append(action)
-            except BrokerError as exc:
-                logger.error("Order error on %s: %s", symbol, exc)
-                outcome["actions"].append({"symbol": symbol, "error": str(exc)})
-            except Exception as exc:  # keep one bad symbol from killing the cycle
-                logger.exception("Unhandled error processing %s", symbol)
-                outcome["actions"].append({"symbol": symbol, "error": repr(exc)})
+        if self.robotic_trading:
+            # Armed: rank a wide universe and take the strongest few.
+            outcome["robotic"] = self._run_robotic(bench_frame, now, outcome)
+        else:
+            # Disarmed: score the configured watchlist only. Existing positions
+            # are still managed above; this branch just makes no new entries
+            # beyond the watchlist.
+            for symbol in self.symbols:
+                try:
+                    action = self._process_symbol(symbol, bench_frame, now)
+                    if action:
+                        outcome["actions"].append(action)
+                except BrokerError as exc:
+                    logger.error("Order error on %s: %s", symbol, exc)
+                    outcome["actions"].append({"symbol": symbol, "error": str(exc)})
+                except Exception as exc:  # one bad symbol must not kill the cycle
+                    logger.exception("Unhandled error processing %s", symbol)
+                    outcome["actions"].append({"symbol": symbol, "error": repr(exc)})
 
         self._last_cycle = now
         self._last_error = ""
@@ -332,6 +346,65 @@ class LiveTrader:
                 )
 
         return actions
+
+    def _run_robotic(
+        self, benchmark: pd.DataFrame | None, now: datetime, outcome: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Rank the universe and open positions in the strongest candidates."""
+        scanner = self._scanner()
+        candidates = scanner.scan(universe_size=self.robotic_universe_size)
+
+        held = set(self.broker.positions)
+        # Slots left, not the total allowed: existing positions already consume
+        # the budget, so picking to the full limit every cycle would overtrade.
+        slots = max(
+            0,
+            min(self.robotic_max_positions, self.risk.max_open_positions) - len(held),
+        )
+
+        picked, rejected = scanner.pick(
+            candidates,
+            limit=slots,
+            held=held,
+            allow_shorts=self.engine.allow_shorts,
+        )
+
+        for candidate in picked:
+            try:
+                action = self._open_from_signal(candidate.signal, now)
+                if action:
+                    action["origin"] = "robotic"
+                    outcome["actions"].append(action)
+            except BrokerError as exc:
+                logger.error("Robotic order error on %s: %s", candidate.symbol, exc)
+                outcome["actions"].append({"symbol": candidate.symbol, "error": str(exc)})
+            except Exception as exc:
+                logger.exception("Robotic entry failed for %s", candidate.symbol)
+                outcome["actions"].append({"symbol": candidate.symbol, "error": repr(exc)})
+
+        if picked:
+            self._log_event(
+                "robotic",
+                f"Picked {len(picked)} of {len(candidates)} scored: "
+                + ", ".join(f"{c.symbol} {c.score:+.2f}" for c in picked),
+            )
+
+        return {
+            "slots_available": slots,
+            "picked": [c.symbol for c in picked],
+            "rejected": rejected[:15],
+            **scanner.summary(candidates),
+        }
+
+    def _scanner(self) -> Scanner:
+        """Built per cycle so settings changes take effect without a restart."""
+        return Scanner(
+            store=self.store,
+            engine=self.engine,
+            client=self.client,
+            interval=self.interval,
+            benchmark_code=self.benchmark_code,
+        )
 
     def _consider_average(
         self, position: Any, price: float, atr: float, now: datetime
@@ -435,6 +508,15 @@ class LiveTrader:
             return None
 
         # New entry.
+        return self._open_from_signal(signal, now)
+
+    def _open_from_signal(self, signal: Any, now: datetime) -> dict[str, Any] | None:
+        """Size and place an entry from a scored signal.
+
+        Shared by the watchlist path and the robotic scanner so both size, place,
+        and record identically — a second implementation would drift.
+        """
+        symbol = signal.symbol
         side = Side.BUY if signal.action is SignalAction.BUY else Side.SELL
         sizing = self.risk.size_position(
             entry=signal.price,
@@ -457,6 +539,7 @@ class LiveTrader:
             product=self.product,
             timestamp=now,
         )
+        self.store.save_order(order, origin="engine", mode=self.broker.mode)
 
         self._log_event(
             "entry",
@@ -489,6 +572,18 @@ class LiveTrader:
     # ------------------------------------------------------------------
     # Controls
     # ------------------------------------------------------------------
+    def set_robotic_trading(self, enabled: bool) -> None:
+        """Arm or disarm automated order placement."""
+        if enabled == self.robotic_trading:
+            return
+        self.robotic_trading = enabled
+        self._log_event(
+            "robotic",
+            "Robotic trading ARMED — the engine will place orders on its own"
+            if enabled
+            else "Robotic trading disarmed — no new automated orders",
+        )
+
     def kill_switch(self) -> dict[str, Any]:
         """Flatten everything and stop entering. The panic button."""
         closed = self.broker.close_all(self._last_prices(), ExitReason.KILL_SWITCH)
@@ -555,6 +650,8 @@ class LiveTrader:
             "interval": self.interval,
             "product": self.product.value,
             "intraday": self.intraday,
+            "robotic_trading": self.robotic_trading,
+            "robotic_max_positions": self.robotic_max_positions,
             "cycles": self._cycle_count,
             "last_cycle": self._last_cycle.isoformat() if self._last_cycle else None,
             "last_error": self._last_error,
