@@ -21,10 +21,11 @@ from app.data.breeze_client import BreezeClient, BreezeError, login_url
 from app.data.expiry import expiry_candidates, to_breeze_expiry
 from app.data.store import MarketStore
 from app.data.ticker import LiveTicker
+from app.engine import monitor
 from app.engine.analysis import AnalysisError, analyse_symbol
 from app.engine.backtest import Backtester
 from app.engine.live import LiveTrader, is_market_open
-from app.models import ProductType
+from app.models import DEFAULT_INTRADAY_PRODUCT, OrderStatus, ProductType, Side
 from app.risk.manager import RiskManager
 from app.strategy.signals import SignalEngine
 
@@ -78,7 +79,7 @@ def build_trader() -> LiveTrader:
         store=store,
         engine=SignalEngine(),
         risk=RiskManager(),
-        product=ProductType.INTRADAY,
+        product=DEFAULT_INTRADAY_PRODUCT,
     )
 
 
@@ -220,6 +221,19 @@ class BacktestRequest(BaseModel):
     starting_capital: float | None = Field(default=None, gt=0)
     entry_threshold: float | None = Field(default=None, ge=0, le=1)
     intraday: bool = True
+
+
+class PlaceOrderRequest(BaseModel):
+    symbol: str = Field(..., min_length=1)
+    # Inline regex flags must lead the pattern in Python's re, so the case
+    # variants are spelled out rather than using (?i).
+    side: str = Field(default="buy", pattern="^([bB][uU][yY]|[sS][eE][lL][lL])$")
+    product: str = Field(default="cash", description="cash | futures | options")
+    quantity: int = Field(default=0, ge=0, description="0 means size it from risk rules")
+    price: float | None = Field(default=None, gt=0, description="None means last price")
+    stoploss: float | None = Field(default=None, gt=0)
+    target: float | None = Field(default=None, gt=0)
+    lot_size: int = Field(default=1, ge=1)
 
 
 class ClosePositionRequest(BaseModel):
@@ -456,7 +470,7 @@ async def analyse(
             broker=trader.broker,
             interval=interval,
             benchmark_code=trader.benchmark_code,
-            product=ProductType.INTRADAY if intraday else ProductType.DELIVERY,
+            product=DEFAULT_INTRADAY_PRODUCT if intraday else ProductType.DELIVERY,
             lot_size=lot_size,
         )
     except AnalysisError as exc:
@@ -578,6 +592,176 @@ def _num(value: Any) -> float | None:
 
 
 # ----------------------------------------------------------------------
+# Broker-side positions (including ones bought by hand)
+# ----------------------------------------------------------------------
+@app.get("/api/broker/positions")
+async def broker_positions() -> dict[str, Any]:
+    """Positions held at ICICI Direct, with computed stop/target levels.
+
+    Covers holdings bought by hand — MTF included. Reading only needs a Breeze
+    session, not live trading mode, so this works while the bot itself is still
+    on paper.
+    """
+    trader = get_trader()
+    if not trader.is_connected:
+        raise HTTPException(status_code=401, detail="Establish a Breeze session first")
+
+    def fetch() -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for source in (trader.client.get_positions, trader.client.get_holdings):
+            try:
+                rows.extend(source() or [])
+            except BreezeError as exc:
+                # One endpoint failing should not hide the other's positions.
+                logger.warning("%s failed: %s", source.__name__, exc)
+        return rows
+
+    rows = await asyncio.to_thread(fetch)
+
+    live = get_ticker()
+    described = monitor.collect(
+        rows,
+        trader.risk,
+        trader.store,
+        trader.interval,
+        live_prices=live.prices() if live else {},
+    )
+
+    return {
+        "positions": described,
+        "alerts": monitor.alerts_from(described),
+        "count": len(described),
+        "raw_rows": len(rows),
+    }
+
+
+# ----------------------------------------------------------------------
+# Manual orders
+# ----------------------------------------------------------------------
+@app.get("/api/order-products")
+async def order_products() -> dict[str, Any]:
+    """Which products can be traded through the API, and which cannot."""
+    return {
+        "placeable": [
+            {
+                "value": p.value,
+                "label": monitor.product_label(p),
+                "leveraged": p.is_leveraged,
+            }
+            for p in ProductType
+            if p.placeable_via_api
+        ],
+        "not_placeable": [
+            {"value": p.value, "label": monitor.product_label(p)}
+            for p in ProductType
+            if not p.placeable_via_api
+        ],
+        "note": (
+            "ICICI prohibits placing, modifying, or cancelling Margin and Option Plus "
+            "orders through Breeze, and MTF order support is undocumented. Those "
+            "positions can be monitored here but must be traded in ICICI Direct."
+        ),
+    }
+
+
+@app.post("/api/orders")
+async def place_order(request: PlaceOrderRequest) -> dict[str, Any]:
+    """Place an order, optionally with an automatic ATR stoploss and target.
+
+    Routes to whichever broker is active, so the same call is a simulated fill in
+    paper mode and a real order in live mode.
+    """
+    trader = get_trader()
+    symbol = request.symbol.strip().upper()
+    product = ProductType.from_breeze(request.product)
+
+    if not product.placeable_via_api:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Breeze does not permit placing '{product.value}' orders via the API. "
+                "Use cash (delivery), futures, or options — or place it in ICICI Direct "
+                "and monitor it here."
+            ),
+        )
+
+    if trader.broker.has_position(symbol):
+        raise HTTPException(status_code=409, detail=f"Position already open in {symbol}")
+
+    # Levels come from the strategy's own analysis so a manual order is protected
+    # by the same rules as an automated one.
+    try:
+        plan = await asyncio.to_thread(
+            analyse_symbol,
+            symbol,
+            trader.store,
+            trader.engine,
+            trader.risk,
+            client=trader.client if trader.is_connected else None,
+            broker=trader.broker,
+            product=product,
+            lot_size=request.lot_size,
+        )
+    except AnalysisError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    entry = request.price or plan["plan"]["entry"]
+    side = Side.BUY if request.side.strip().lower() == "buy" else Side.SELL
+
+    # Recompute against the actual entry price when the caller supplied one.
+    stoploss, target = trader.risk.stop_and_target(entry, plan["market"]["atr"], side)
+    if request.stoploss:
+        stoploss = request.stoploss
+    if request.target:
+        target = request.target
+
+    quantity = request.quantity or plan["plan"]["quantity"]
+    if quantity < 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Quantity resolved to {quantity}. {plan['plan']['sizing_note']}",
+        )
+
+    place = trader.broker.buy if side is Side.BUY else trader.broker.sell
+    order = await asyncio.to_thread(
+        place,
+        symbol=symbol,
+        quantity=quantity,
+        price=entry,
+        stoploss=stoploss,
+        target=target,
+        product=product,
+    )
+
+    if order.status is OrderStatus.REJECTED:
+        raise HTTPException(status_code=400, detail=order.message)
+
+    trader._log_event(
+        "manual_order",
+        f"{side.value.upper()} {symbol} x{quantity} @ ₹{entry:,.2f} "
+        f"(stop ₹{stoploss:,.2f}, target ₹{target:,.2f})",
+    )
+    await broadcast({"type": "order", "data": order.to_dict()})
+
+    return {
+        "order": order.to_dict(),
+        "mode": trader.broker.mode,
+        "plan": {
+            "entry": round(entry, 2),
+            "stoploss": round(stoploss, 2),
+            "target": round(target, 2),
+            "quantity": quantity,
+        },
+        "analysis": {
+            "action": plan["action"],
+            "score": plan["score"],
+            "conviction": plan["conviction"],
+            "reasons": plan["reasons"],
+        },
+    }
+
+
+# ----------------------------------------------------------------------
 # Controls
 # ----------------------------------------------------------------------
 @app.post("/api/kill-switch")
@@ -654,7 +838,7 @@ async def run_backtest(request: BacktestRequest) -> dict[str, Any]:
         engine=engine,
         risk=RiskManager(),
         starting_capital=request.starting_capital,
-        product=ProductType.INTRADAY if request.intraday else ProductType.DELIVERY,
+        product=DEFAULT_INTRADAY_PRODUCT if request.intraday else ProductType.DELIVERY,
         interval=interval,
     )
 

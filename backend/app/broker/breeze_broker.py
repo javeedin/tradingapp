@@ -26,6 +26,7 @@ from app.broker.base import Broker, BrokerError
 from app.config import settings
 from app.data.breeze_client import BreezeClient, BreezeError
 from app.models import (
+    DEFAULT_INTRADAY_PRODUCT,
     ExitReason,
     Order,
     OrderStatus,
@@ -116,7 +117,7 @@ class BreezeBroker(Broker):
         price: float,
         stoploss: float,
         target: float,
-        product: ProductType = ProductType.INTRADAY,
+        product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
     ) -> Order:
         return self._open(
@@ -130,7 +131,7 @@ class BreezeBroker(Broker):
         price: float,
         stoploss: float,
         target: float,
-        product: ProductType = ProductType.INTRADAY,
+        product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
     ) -> Order:
         return self._open(
@@ -160,6 +161,21 @@ class BreezeBroker(Broker):
             target=target,
         )
         self._orders.append(order)
+
+        # ICICI prohibits placing, modifying, or cancelling Margin and Option
+        # Plus orders through Breeze, and MTF order support is undocumented.
+        # Refusing here gives a message that names the cause; sending it would
+        # come back as an opaque rejection from the exchange, or worse, appear to
+        # succeed and leave the position untracked.
+        if not product.placeable_via_api:
+            order.status = OrderStatus.REJECTED
+            order.message = (
+                f"Breeze does not permit placing '{product.value}' orders via the API. "
+                "Use cash (delivery), futures, or options. MARGIN and MTF positions "
+                "can be monitored but must be opened and closed in ICICI Direct itself."
+            )
+            logger.error("Refusing %s order for %s: %s", product.value, symbol, order.message)
+            return order
 
         if symbol in self._positions:
             order.status = OrderStatus.REJECTED

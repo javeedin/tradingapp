@@ -154,7 +154,7 @@ def make_trade(pnl: float, symbol: str = "TEST") -> Trade:
         pnl=pnl,
         costs=5.0,
         exit_reason=ExitReason.TARGET if pnl > 0 else ExitReason.STOPLOSS,
-        product=ProductType.INTRADAY,
+        product=ProductType.DELIVERY,
     )
 
 

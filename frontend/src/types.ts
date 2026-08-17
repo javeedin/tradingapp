@@ -249,6 +249,77 @@ export interface OptionChainResponse {
   count: number
 }
 
+export interface BrokerPosition {
+  symbol: string
+  side: string
+  quantity: number
+  entry_price: number
+  last_price: number
+  product: string
+  product_label: string
+  leveraged: boolean
+  exitable_via_api: boolean
+  unrealised_pnl: number
+  unrealised_pct: number
+  value: number
+  atr: number
+  levels_available: boolean
+  stoploss?: number
+  target?: number
+  stop_distance_pct?: number
+  target_distance_pct?: number
+  risk_reward?: number
+  risk_amount?: number
+  status?: string
+  progress_pct?: number
+  note?: string
+}
+
+export interface PositionAlert {
+  symbol: string
+  status: string
+  last_price: number
+  stoploss: number | null
+  target: number | null
+  exitable_via_api: boolean
+  timestamp: string
+}
+
+export interface BrokerPositionsResponse {
+  positions: BrokerPosition[]
+  alerts: PositionAlert[]
+  count: number
+  raw_rows: number
+}
+
+export interface OrderProduct {
+  value: string
+  label: string
+  leveraged?: boolean
+}
+
+export interface OrderProductsResponse {
+  placeable: OrderProduct[]
+  not_placeable: OrderProduct[]
+  note: string
+}
+
+export interface PlaceOrderResponse {
+  order: {
+    order_id: string
+    symbol: string
+    side: string
+    quantity: number
+    product: string
+    status: string
+    filled_price: number | null
+    message: string
+  }
+  mode: string
+  plan: { entry: number; stoploss: number; target: number; quantity: number }
+  analysis: { action: string; score: number; conviction: string; reasons: string[] }
+}
+
 export interface BacktestResponse {
   stats: BacktestStats
   trades: Trade[]

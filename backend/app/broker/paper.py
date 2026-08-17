@@ -20,6 +20,7 @@ from datetime import datetime
 from app.broker.base import Broker, BrokerError
 from app.config import settings
 from app.models import (
+    DEFAULT_INTRADAY_PRODUCT,
     ExitReason,
     Order,
     OrderStatus,
@@ -83,7 +84,7 @@ class PaperBroker(Broker):
         price: float,
         stoploss: float,
         target: float,
-        product: ProductType = ProductType.INTRADAY,
+        product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
     ) -> Order:
         return self._open(
@@ -97,7 +98,7 @@ class PaperBroker(Broker):
         price: float,
         stoploss: float,
         target: float,
-        product: ProductType = ProductType.INTRADAY,
+        product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
     ) -> Order:
         return self._open(

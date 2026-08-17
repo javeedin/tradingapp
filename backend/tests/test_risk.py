@@ -32,7 +32,7 @@ def make_position(side: Side = Side.BUY, entry: float = 1000.0) -> Position:
         quantity=10,
         entry_price=entry,
         entry_time=datetime(2025, 1, 1, 10, 0),
-        product=ProductType.INTRADAY,
+        product=ProductType.DELIVERY,
         stoploss=stop,
         target=target,
     )
@@ -239,21 +239,43 @@ def test_short_stop_triggers_on_a_rise(risk):
 
 
 def test_intraday_squareoff_after_cutoff(risk):
+    """Squaring off is driven by the strategy flag, not by the Breeze product.
+
+    Cash positions are routinely traded intraday, and the leveraged MARGIN
+    product cannot even be placed through the API — so deriving this from the
+    product type was both wrong and unusable.
+    """
     position = make_position(Side.BUY, 1000.0)
     position.update_price(1000.0)
     result = risk.check_exit(
-        position, high=1005.0, low=998.0, now=datetime(2025, 1, 1, 15, 20)
+        position,
+        high=1005.0,
+        low=998.0,
+        now=datetime(2025, 1, 1, 15, 20),
+        intraday=True,
     )
     assert result is not None
     assert result[0] is ExitReason.SQUAREOFF
 
 
-def test_delivery_positions_survive_the_cutoff(risk):
+def test_positional_trades_survive_the_cutoff(risk):
     position = make_position(Side.BUY, 1000.0)
-    position.product = ProductType.DELIVERY
     position.update_price(1000.0)
     assert (
-        risk.check_exit(position, 1005.0, 998.0, now=datetime(2025, 1, 1, 15, 20))
+        risk.check_exit(
+            position, 1005.0, 998.0, now=datetime(2025, 1, 1, 15, 20), intraday=False
+        )
+        is None
+    )
+
+
+def test_squareoff_does_not_fire_before_the_cutoff(risk):
+    position = make_position(Side.BUY, 1000.0)
+    position.update_price(1000.0)
+    assert (
+        risk.check_exit(
+            position, 1005.0, 998.0, now=datetime(2025, 1, 1, 11, 0), intraday=True
+        )
         is None
     )
 

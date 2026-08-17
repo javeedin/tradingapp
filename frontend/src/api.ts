@@ -1,10 +1,13 @@
 import type {
   Analysis,
   BacktestResponse,
+  BrokerPositionsResponse,
   CandleResponse,
   EngineEvent,
   ExpiryCandidate,
   OptionChainResponse,
+  OrderProductsResponse,
+  PlaceOrderResponse,
   Position,
   Quote,
   Signal,
@@ -77,6 +80,24 @@ export const api = {
   runCycle: () => request<Record<string, unknown>>('/cycle', { method: 'POST' }),
 
   ticker: () => request<{ quotes: Quote[]; status: TickerStatus }>('/ticker'),
+
+  brokerPositions: () => request<BrokerPositionsResponse>('/broker/positions'),
+
+  orderProducts: () => request<OrderProductsResponse>('/order-products'),
+
+  placeOrder: (payload: {
+    symbol: string
+    side: string
+    product: string
+    quantity?: number
+    price?: number
+    stoploss?: number
+    target?: number
+  }) =>
+    request<PlaceOrderResponse>('/orders', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   startTicker: () => request<TickerStatus>('/ticker/start', { method: 'POST' }),
 

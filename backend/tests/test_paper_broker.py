@@ -195,6 +195,10 @@ def test_closing_an_unknown_symbol_is_a_no_op(broker):
     assert broker.close_position("NOPE", 100.0) is None
 
 
-def test_intraday_product_is_flagged():
-    assert ProductType.INTRADAY.is_intraday
-    assert not ProductType.DELIVERY.is_intraday
+def test_only_permitted_products_are_placeable():
+    """Breeze prohibits Margin and Option Plus order placement via API."""
+    assert ProductType.DELIVERY.placeable_via_api
+    assert ProductType.OPTIONS.placeable_via_api
+    assert ProductType.FUTURES.placeable_via_api
+    assert not ProductType.MARGIN.placeable_via_api
+    assert not ProductType.MTF.placeable_via_api

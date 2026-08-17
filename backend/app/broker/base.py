@@ -16,7 +16,15 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 from app.config import settings
-from app.models import ExitReason, Order, Position, ProductType, Side, Trade
+from app.models import (
+    DEFAULT_INTRADAY_PRODUCT,
+    ExitReason,
+    Order,
+    Position,
+    ProductType,
+    Side,
+    Trade,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +70,7 @@ class Broker(ABC):
         price: float,
         stoploss: float,
         target: float,
-        product: ProductType = ProductType.INTRADAY,
+        product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
     ) -> Order:
         """Open a long position with a protective stop."""
@@ -75,7 +83,7 @@ class Broker(ABC):
         price: float,
         stoploss: float,
         target: float,
-        product: ProductType = ProductType.INTRADAY,
+        product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         timestamp: datetime | None = None,
     ) -> Order:
         """Open a short position with a protective stop."""

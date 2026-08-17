@@ -30,7 +30,14 @@ import pandas as pd
 
 from app.broker.paper import PaperBroker
 from app.config import settings
-from app.models import ExitReason, ProductType, Side, SignalAction, Trade
+from app.models import (
+    DEFAULT_INTRADAY_PRODUCT,
+    ExitReason,
+    ProductType,
+    Side,
+    SignalAction,
+    Trade,
+)
 from app.risk.manager import RiskManager
 from app.strategy import indicators
 from app.strategy.signals import SignalEngine
@@ -86,8 +93,9 @@ class Backtester:
         engine: SignalEngine | None = None,
         risk: RiskManager | None = None,
         starting_capital: float | None = None,
-        product: ProductType = ProductType.INTRADAY,
+        product: ProductType = DEFAULT_INTRADAY_PRODUCT,
         interval: str | None = None,
+        intraday: bool = True,
     ) -> None:
         self.engine = engine or SignalEngine()
         self.risk = risk or RiskManager()
@@ -96,6 +104,8 @@ class Backtester:
         )
         self.product = product
         self.interval = interval or settings.candle_interval
+        # Squaring off is a strategy choice, independent of the Breeze product.
+        self.intraday = intraday
         self.broker = PaperBroker(self.starting_capital)
 
     # ------------------------------------------------------------------
@@ -166,7 +176,7 @@ class Backtester:
                 self.risk.record_pnl(trade.net_pnl, timestamp)
 
             # 3. Force intraday positions flat at the cutoff.
-            if self.product.is_intraday and self.risk.past_squareoff(timestamp):
+            if self.intraday and self.risk.past_squareoff(timestamp):
                 for trade in self.broker.close_all(
                     {s: b["close"] for s, b in bars.items()},
                     ExitReason.SQUAREOFF,

@@ -9,6 +9,7 @@ import PriceChart from './components/PriceChart'
 import SessionPanel from './components/SessionPanel'
 import SignalsPanel from './components/SignalsPanel'
 import TickerTape from './components/TickerTape'
+import TradePanel from './components/TradePanel'
 import TradesTable from './components/TradesTable'
 import { useTheme } from './theme'
 import type {
@@ -29,6 +30,7 @@ const TICKER_POLL_MS = 1000
 const TABS = [
   { id: 'live', label: 'Live' },
   { id: 'analyse', label: 'Analyse' },
+  { id: 'trade', label: 'Trade' },
   { id: 'options', label: 'Options' },
   { id: 'backtest', label: 'Backtest' },
   { id: 'history', label: 'History' },
@@ -362,6 +364,8 @@ export default function App() {
       )}
 
       {tab === 'analyse' && <AnalysePanel universe={status?.symbols ?? []} />}
+
+      {tab === 'trade' && <TradePanel universe={status?.symbols ?? []} />}
 
       {tab === 'options' && <OptionChain />}
 

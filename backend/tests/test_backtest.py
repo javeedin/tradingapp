@@ -18,7 +18,7 @@ def backtester() -> Backtester:
         engine=SignalEngine(entry_threshold=0.2),
         risk=RiskManager(max_position_pct=100.0),
         starting_capital=100_000,
-        product=ProductType.INTRADAY,
+        product=ProductType.DELIVERY,
         interval="5minute",
     )
 

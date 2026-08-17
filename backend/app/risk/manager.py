@@ -310,6 +310,7 @@ class RiskManager:
         high: float,
         low: float,
         now: datetime | None = None,
+        intraday: bool = False,
     ) -> tuple[ExitReason, float] | None:
         """Whether a bar's range triggers an exit, and at what price.
 
@@ -317,6 +318,9 @@ class RiskManager:
         there is no way to know from OHLC alone which came first, so assuming the
         stop keeps the backtest honest — the optimistic assumption inflates
         results in exactly the volatile conditions where it matters most.
+
+        `intraday` is passed in rather than read off the product: squaring off is
+        a strategy decision, and cash positions are routinely traded intraday.
         """
         if position.stop_hit(low, high):
             return ExitReason.STOPLOSS, position.stoploss
@@ -324,7 +328,7 @@ class RiskManager:
         if position.target_hit(low, high):
             return ExitReason.TARGET, position.target
 
-        if position.product.is_intraday and self.past_squareoff(now):
+        if intraday and self.past_squareoff(now):
             return ExitReason.SQUAREOFF, position.last_price
 
         return None

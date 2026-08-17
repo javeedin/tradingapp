@@ -19,7 +19,7 @@ from app.broker.base import Broker
 from app.config import settings
 from app.data.breeze_client import BreezeClient, BreezeError
 from app.data.store import MarketStore
-from app.models import ProductType, Side, SignalAction
+from app.models import DEFAULT_INTRADAY_PRODUCT, ProductType, Side, SignalAction
 from app.risk.manager import RiskManager
 from app.strategy import indicators
 from app.strategy.signals import SignalEngine
@@ -53,7 +53,7 @@ def analyse_symbol(
     broker: Broker | None = None,
     interval: str | None = None,
     benchmark_code: str | None = None,
-    product: ProductType = ProductType.INTRADAY,
+    product: ProductType = DEFAULT_INTRADAY_PRODUCT,
     lot_size: int = 1,
     refresh: bool = True,
 ) -> dict[str, Any]:

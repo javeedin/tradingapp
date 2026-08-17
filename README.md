@@ -173,6 +173,41 @@ cd desktop && npm run dist
 Note that packaging bundles the backend source but **not** a Python runtime —
 the target machine still needs Python and the installed dependencies.
 
+### Placing orders and monitoring positions
+
+The **Trade** tab places orders with an ATR stoploss and target attached
+automatically, and lists every position held at ICICI Direct — including ones
+bought by hand.
+
+**What the API will and will not do**, because this is not obvious and matters:
+
+| Product | Place via API | Monitor here |
+|---|---|---|
+| Delivery (cash) | yes | yes |
+| Futures | yes | yes |
+| Options | yes | yes |
+| **Margin** (intraday leverage) | **no** | yes |
+| **MTF** | **no** | yes |
+
+ICICI prohibits placing, modifying, or cancelling **Margin and Option Plus**
+orders through Breeze, and **MTF** order support is undocumented — an
+[open issue asking about it](https://github.com/Idirect-Tech/Breeze-Python-SDK/issues/197)
+has no maintainer reply. The live broker refuses those products outright rather
+than letting the order fail at the exchange with an opaque error.
+
+*Reading* positions is not restricted, though. So an MTF holding you bought in
+ICICI Direct still appears in the Trade tab with an ATR stoploss and target
+computed from the same rules the automated strategy uses, its live P&L, and a
+stop→target progress bar. When a level is reached the dashboard says so — but
+the exit has to be placed in ICICI Direct, and the row is labelled to make that
+unambiguous.
+
+This is also why `DEFAULT_INTRADAY_PRODUCT` is `cash` and not `margin`: whether
+a position is squared off before the cutoff is a strategy decision carried by an
+explicit `intraday` flag, not a property of the Breeze product. Deriving it from
+the product meant "trade intraday" implied the MARGIN product, which cannot be
+placed via the API at all.
+
 ### Analysing a single stock
 
 The **Analyse** tab answers "should I buy this, and where do I get out" for any

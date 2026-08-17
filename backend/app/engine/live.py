@@ -25,7 +25,13 @@ from app.broker.paper import PaperBroker
 from app.config import settings
 from app.data.breeze_client import BreezeClient, BreezeError, SessionExpiredError
 from app.data.store import MarketStore
-from app.models import ExitReason, ProductType, Side, SignalAction
+from app.models import (
+    DEFAULT_INTRADAY_PRODUCT,
+    ExitReason,
+    ProductType,
+    Side,
+    SignalAction,
+)
 from app.risk.manager import RiskManager
 from app.strategy import indicators
 from app.strategy.signals import SignalEngine
@@ -71,7 +77,8 @@ class LiveTrader:
         engine: SignalEngine | None = None,
         risk: RiskManager | None = None,
         symbols: list[str] | None = None,
-        product: ProductType = ProductType.INTRADAY,
+        product: ProductType = DEFAULT_INTRADAY_PRODUCT,
+        intraday: bool = True,
     ) -> None:
         self.client = client or BreezeClient()
         self.store = store or MarketStore()
@@ -80,6 +87,8 @@ class LiveTrader:
         self.broker: Broker = broker or PaperBroker()
         self.symbols = symbols or settings.universe
         self.product = product
+        # Squaring off is a strategy choice, independent of the Breeze product.
+        self.intraday = intraday
         self.interval = settings.candle_interval
         self.benchmark_code = settings.benchmark_code
 
@@ -204,7 +213,7 @@ class LiveTrader:
         outcome["actions"].extend(self._manage_positions(now))
 
         # 3. Force intraday flat at the cutoff, then stop for the day.
-        if self.product.is_intraday and self.risk.past_squareoff(now):
+        if self.intraday and self.risk.past_squareoff(now):
             closed = self.broker.close_all(self._last_prices(), ExitReason.SQUAREOFF, now)
             for trade in closed:
                 self.risk.record_pnl(trade.net_pnl, now)
@@ -288,7 +297,11 @@ class LiveTrader:
                 )
 
             exit_check = self.risk.check_exit(
-                position, high=float(last["high"]), low=float(last["low"]), now=now
+                position,
+                high=float(last["high"]),
+                low=float(last["low"]),
+                now=now,
+                intraday=self.intraday,
             )
             if exit_check is None:
                 continue
@@ -471,6 +484,7 @@ class LiveTrader:
             "symbols": self.symbols,
             "interval": self.interval,
             "product": self.product.value,
+            "intraday": self.intraday,
             "cycles": self._cycle_count,
             "last_cycle": self._last_cycle.isoformat() if self._last_cycle else None,
             "last_error": self._last_error,

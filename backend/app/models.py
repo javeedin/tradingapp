@@ -31,18 +31,61 @@ class SignalAction(str, Enum):
 class ProductType(str, Enum):
     """Breeze product types.
 
-    INTRADAY (MIS-equivalent) is force-closed before the square-off cutoff;
-    DELIVERY (CNC) is held overnight. Options use FUTURES/OPTIONS margin.
+    Not all of these can be traded through the API. ICICI prohibits *placing,
+    modifying, or cancelling* Margin and Option Plus orders via Breeze, and MTF
+    order support is undocumented — so MARGIN and MTF positions can be read and
+    monitored but not opened or closed programmatically. `placeable_via_api`
+    encodes that, and the live broker refuses rather than letting the order fail
+    at the exchange with an opaque error.
     """
 
-    INTRADAY = "margin"
-    DELIVERY = "cash"
+    # Placeable through the API.
+    DELIVERY = "cash"  # CNC — held overnight
     OPTIONS = "options"
     FUTURES = "futures"
 
+    # Readable and monitorable, but NOT placeable through the API.
+    MARGIN = "margin"  # ICICI's intraday leveraged product
+    MTF = "mtf"  # Margin Trading Facility — leveraged delivery
+
     @property
-    def is_intraday(self) -> bool:
-        return self is ProductType.INTRADAY
+    def placeable_via_api(self) -> bool:
+        """Whether Breeze permits order placement for this product."""
+        return self in {ProductType.DELIVERY, ProductType.OPTIONS, ProductType.FUTURES}
+
+    @property
+    def is_leveraged(self) -> bool:
+        return self in {ProductType.MARGIN, ProductType.MTF, ProductType.FUTURES}
+
+    # Note: there is deliberately no `is_intraday` here. Whether a position gets
+    # squared off before the cutoff is a decision about the *strategy*, not a
+    # property of the Breeze product — cash positions are routinely traded
+    # intraday. Conflating the two meant "trade intraday" implied the MARGIN
+    # product, which the API cannot place. The engines carry an explicit
+    # `intraday` flag instead.
+
+    @classmethod
+    def from_breeze(cls, value: str | None) -> ProductType:
+        """Map a Breeze product string onto this enum, defaulting to delivery."""
+        if not value:
+            return cls.DELIVERY
+        normalised = str(value).strip().lower()
+        for member in cls:
+            if member.value == normalised:
+                return member
+        # Breeze uses several spellings for the leveraged delivery product.
+        if normalised in {"mtf", "margin_trading", "marginfunding", "emargin"}:
+            return cls.MTF
+        return cls.DELIVERY
+
+
+# The intraday product the engine trades by default.
+#
+# Deliberately DELIVERY, not MARGIN: MARGIN would give intraday leverage but
+# Breeze refuses to place those orders via API, so an engine configured that way
+# cannot trade live at all. Cash intraday means no leverage, and positions are
+# still squared off by the scheduler rather than by the product type.
+DEFAULT_INTRADAY_PRODUCT = ProductType.DELIVERY
 
 
 class OrderStatus(str, Enum):
@@ -269,7 +312,7 @@ class Trade:
     pnl: float
     costs: float
     exit_reason: ExitReason
-    product: ProductType = ProductType.INTRADAY
+    product: ProductType = DEFAULT_INTRADAY_PRODUCT
 
     @property
     def net_pnl(self) -> float:
