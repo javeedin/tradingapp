@@ -1,4 +1,4 @@
-import type { OptionChainResponse, OptionRow } from './types'
+import type { OptionChainResponse } from './types'
 
 export interface ClaudeAnalysisResult {
   marketMovement: string
