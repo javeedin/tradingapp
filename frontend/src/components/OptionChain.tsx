@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, formatNumber } from '../api'
+import OptionOrderDialog, { type OptionDraft } from './OptionOrderDialog'
+import OptionPositions from './OptionPositions'
 import type { ExpiryCandidate, OptionChainResponse, OptionLeg } from '../types'
 
 // Index underlyings people actually trade options on, as Breeze codes.
@@ -21,7 +23,15 @@ function compact(value: number | null | undefined): string {
   return String(Math.round(value))
 }
 
-function LegCells({ leg, side }: { leg: OptionLeg | null; side: 'call' | 'put' }) {
+function LegCells({
+  leg,
+  side,
+  onTrade,
+}: {
+  leg: OptionLeg | null
+  side: 'call' | 'put'
+  onTrade: (right: 'call' | 'put', premium: number, orderSide: 'buy' | 'sell') => void
+}) {
   // Tint in-the-money legs so the ATM boundary is visible without reading strikes.
   const tint = side === 'call' ? 'rgba(18,138,77,0.05)' : 'rgba(211,47,54,0.05)'
 
@@ -31,11 +41,13 @@ function LegCells({ leg, side }: { leg: OptionLeg | null; side: 'call' | 'put' }
         <td className="num dim" style={{ background: tint }}>—</td>
         <td className="num dim" style={{ background: tint }}>—</td>
         <td className="num dim" style={{ background: tint }}>—</td>
+        <td style={{ background: tint }} />
       </>
     )
   }
 
   const changeTone = (leg.change ?? 0) >= 0 ? 'pos' : 'neg'
+  const tradable = leg.ltp !== null && leg.ltp > 0
 
   return (
     <>
@@ -48,11 +60,30 @@ function LegCells({ leg, side }: { leg: OptionLeg | null; side: 'call' | 'put' }
       <td className="num dim" style={{ background: tint }}>
         {compact(leg.open_interest)}
       </td>
+      <td className="leg-actions" style={{ background: tint }}>
+        {/* A leg with no premium cannot be priced, so it cannot be ordered. */}
+        <button
+          className="mini"
+          disabled={!tradable}
+          title={`Buy ${side} at ${num(leg.ltp)}`}
+          onClick={() => onTrade(side, leg.ltp as number, 'buy')}
+        >
+          B
+        </button>
+        <button
+          className="mini danger-ghost"
+          disabled={!tradable}
+          title={`Write (sell) ${side} at ${num(leg.ltp)}`}
+          onClick={() => onTrade(side, leg.ltp as number, 'sell')}
+        >
+          W
+        </button>
+      </td>
     </>
   )
 }
 
-export default function OptionChain() {
+export default function OptionChain({ mode }: { mode: string }) {
   const [symbol, setSymbol] = useState('NIFTY')
   const [expiries, setExpiries] = useState<ExpiryCandidate[]>([])
   const [expiry, setExpiry] = useState('')
@@ -60,6 +91,9 @@ export default function OptionChain() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
+  const [draft, setDraft] = useState<OptionDraft | null>(null)
+  // Bumped after a fill so the positions panel refetches.
+  const [placed, setPlaced] = useState(0)
 
   // The ATM row, so the chain can open centred on it. A chain that opens at the
   // top of the strike range shows only deep in-the-money calls — technically
@@ -127,8 +161,40 @@ export default function OptionChain() {
     return () => cancelAnimationFrame(id)
   }, [chain, atmStrike, showAll])
 
+  const openOrder = (
+    strike: number,
+    right: 'call' | 'put',
+    premium: number,
+    side: 'buy' | 'sell',
+  ) => {
+    if (!chain) return
+    setDraft({
+      underlying: chain.symbol,
+      expiry: chain.expiry,
+      strike,
+      right,
+      side,
+      premium,
+      lotSize: chain.lot_size || 1,
+    })
+  }
+
   return (
     <div className="grid" style={{ gap: 16 }}>
+      {draft && (
+        <OptionOrderDialog
+          draft={draft}
+          mode={mode}
+          onCancel={() => setDraft(null)}
+          onPlaced={() => {
+            setDraft(null)
+            setPlaced((n) => n + 1)
+          }}
+        />
+      )}
+
+      <OptionPositions refreshKey={placed} />
+
       <div className="panel">
         <div className="panel-head">
           <span>Option Chain</span>
@@ -193,8 +259,9 @@ export default function OptionChain() {
             {atmStrike !== null && (
               <span className="badge ok">ATM {formatNumber(atmStrike, 0)}</span>
             )}
+            <span className="badge off">{chain.lot_size} / lot</span>
             <span className="dim" style={{ fontWeight: 400, fontSize: 11 }}>
-              <span className="pos">calls</span> left · <span className="neg">puts</span> right
+              <strong>B</strong> buy · <strong>W</strong> write
             </span>
           </div>
           <div className="panel-body flush">
@@ -207,13 +274,13 @@ export default function OptionChain() {
                 <table>
                   <thead>
                     <tr>
-                      <th className="num" colSpan={3} style={{ textAlign: 'center' }}>
+                      <th className="num" colSpan={4} style={{ textAlign: 'center' }}>
                         CALLS
                       </th>
                       <th className="num" style={{ textAlign: 'center' }}>
                         STRIKE
                       </th>
-                      <th className="num" colSpan={3} style={{ textAlign: 'center' }}>
+                      <th className="num" colSpan={4} style={{ textAlign: 'center' }}>
                         PUTS
                       </th>
                     </tr>
@@ -221,10 +288,12 @@ export default function OptionChain() {
                       <th className="num">LTP</th>
                       <th className="num">Chg</th>
                       <th className="num">OI</th>
+                      <th>Order</th>
                       <th className="num" />
                       <th className="num">LTP</th>
                       <th className="num">Chg</th>
                       <th className="num">OI</th>
+                      <th>Order</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -251,7 +320,13 @@ export default function OptionChain() {
                               : undefined
                           }
                         >
-                          <LegCells leg={row.call} side="call" />
+                          <LegCells
+                            leg={row.call}
+                            side="call"
+                            onTrade={(right, premium, side) =>
+                              openOrder(row.strike, right, premium, side)
+                            }
+                          />
                           <td className="num strike-cell">
                             {formatNumber(row.strike, 0)}
                             {isAtm && <span className="strike-atm">ATM</span>}
@@ -259,7 +334,13 @@ export default function OptionChain() {
                               <span className="strike-moneyness">{moneyness}</span>
                             )}
                           </td>
-                          <LegCells leg={row.put} side="put" />
+                          <LegCells
+                            leg={row.put}
+                            side="put"
+                            onTrade={(right, premium, side) =>
+                              openOrder(row.strike, right, premium, side)
+                            }
+                          />
                         </tr>
                       )
                     })}

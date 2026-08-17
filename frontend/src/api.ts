@@ -9,10 +9,16 @@ import type {
   EngineEvent,
   ExpiryCandidate,
   OptionChainResponse,
+  OptionOrderRequest,
+  OptionPlan,
+  OptionPositionsResponse,
   OrderProductsResponse,
+  OrderRecord,
   PlaceOrderResponse,
   Position,
   Quote,
+  RuntimeSettings,
+  SettingsUpdate,
   Signal,
   Status,
   TickerStatus,
@@ -139,6 +145,33 @@ export const api = {
     if (expiry) params.set('expiry', expiry)
     return request<OptionChainResponse>(`/option-chain?${params.toString()}`)
   },
+
+  settings: () => request<RuntimeSettings>('/settings'),
+
+  updateSettings: (payload: SettingsUpdate) =>
+    request<RuntimeSettings>('/settings', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  previewOptionOrder: (payload: OptionOrderRequest) =>
+    request<OptionPlan>('/options/preview', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  placeOptionOrder: (payload: OptionOrderRequest) =>
+    request<{ order: Record<string, unknown>; plan: OptionPlan; mode: string }>(
+      '/options/orders',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
+  optionPositions: () => request<OptionPositionsResponse>('/options/positions'),
+
+  optionOrders: (limit = 200) =>
+    request<{ orders: OrderRecord[]; session_orders: unknown[]; mode: string }>(
+      `/options/orders?limit=${limit}`,
+    ),
 
   backtest: (payload: {
     days: number

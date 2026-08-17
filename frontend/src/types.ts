@@ -39,6 +39,9 @@ export interface Status {
   last_error: string
   account: AccountSummary
   risk: RiskStatus
+  intraday: boolean
+  robotic_trading: boolean
+  robotic_max_positions: number
   login_url?: string
   live_mode_warning?: string | null
 }
@@ -247,6 +250,72 @@ export interface OptionChainResponse {
   spot: number | null
   rows: OptionRow[]
   count: number
+  lot_size: number
+}
+
+export interface OptionContract {
+  underlying: string
+  expiry: string
+  strike: number
+  right: string
+  right_short: string
+  lot_size: number
+  key: string
+  label: string
+}
+
+/** What an option order will cost and risk, before it is sent. */
+export interface OptionPlan {
+  contract: OptionContract
+  side: string
+  lots: number
+  quantity: number
+  lot_size: number
+  premium: number
+  stoploss: number
+  target: number
+  stop_pct: number
+  target_pct: number
+  premium_value: number
+  estimated_costs: number
+  margin_blocked: number
+  required: number
+  available: number
+  affordable: boolean
+  shortfall: number
+  max_affordable_lots: number
+  risk_amount: number
+  reward_amount: number
+  risk_reward: number
+  days_to_expiry: number
+  warnings: string[]
+  mode: string
+  account: Funds
+}
+
+export interface OptionOrderRequest {
+  underlying: string
+  expiry: string
+  strike: number
+  right: string
+  side: string
+  lots: number
+  lot_size?: number
+  premium?: number
+  stop_pct?: number
+  target_pct?: number
+}
+
+export interface OptionPosition extends Position {
+  contract: OptionContract
+}
+
+export interface OptionPositionsResponse {
+  positions: OptionPosition[]
+  count: number
+  repriced: number
+  mode: string
+  note: string
 }
 
 export interface BrokerPosition {
@@ -397,6 +466,75 @@ export interface OrderHistoryResponse {
   broker_orders?: Record<string, unknown>[]
   broker_orders_error?: string
 }
+
+export interface ExitPolicyOption {
+  value: string
+  label: string
+  note: string
+  has_stoploss: boolean
+  averages_down: boolean
+}
+
+/** Runtime tunables, as returned by GET /api/settings. */
+export interface RuntimeSettings {
+  exit_policy: { value: string; options: ExitPolicyOption[] }
+  risk: {
+    risk_per_trade_pct: number
+    max_daily_loss_pct: number
+    max_open_positions: number
+    max_position_pct: number
+    atr_stop_multiplier: number
+    atr_target_multiplier: number
+    use_trailing_stop: boolean
+    trail_atr_multiplier: number
+  }
+  averaging: {
+    max_adds: number
+    add_trigger_atr: number
+    max_symbol_exposure_pct: number
+  }
+  signals: {
+    entry_threshold: number
+    exit_threshold: number
+    allow_shorts: boolean
+  }
+  robotic: {
+    enabled: boolean
+    max_positions: number
+    universe_size: number
+  }
+  session: {
+    mode: string
+    intraday: boolean
+    interval: string
+    symbols: string[]
+  }
+  note: string
+  changes?: string[]
+}
+
+/** Every field optional: a PUT changes only what it names. */
+export type SettingsUpdate = Partial<{
+  exit_policy: string
+  risk_per_trade_pct: number
+  max_daily_loss_pct: number
+  max_open_positions: number
+  max_position_pct: number
+  atr_stop_multiplier: number
+  atr_target_multiplier: number
+  use_trailing_stop: boolean
+  trail_atr_multiplier: number
+  max_adds: number
+  add_trigger_atr: number
+  max_symbol_exposure_pct: number
+  entry_threshold: number
+  exit_threshold: number
+  allow_shorts: boolean
+  robotic_trading: boolean
+  robotic_max_positions: number
+  robotic_universe_size: number
+  intraday: boolean
+}>
 
 export interface BacktestResponse {
   stats: BacktestStats

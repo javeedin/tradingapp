@@ -8,6 +8,7 @@ import OrdersPanel from './components/OrdersPanel'
 import PositionsTable from './components/PositionsTable'
 import PriceChart from './components/PriceChart'
 import SessionPanel from './components/SessionPanel'
+import SettingsPanel from './components/SettingsPanel'
 import SignalsPanel from './components/SignalsPanel'
 import TickerTape from './components/TickerTape'
 import TradePanel from './components/TradePanel'
@@ -28,17 +29,51 @@ const POLL_MS = 5000
 // five seconds behind does not read as live.
 const TICKER_POLL_MS = 1000
 
-const TABS = [
-  { id: 'live', label: 'Live' },
-  { id: 'analyse', label: 'Analyse' },
-  { id: 'trade', label: 'Trade' },
-  { id: 'orders', label: 'Orders' },
-  { id: 'options', label: 'Options' },
-  { id: 'backtest', label: 'Backtest' },
-  { id: 'history', label: 'History' },
-] as const
+interface NavTab {
+  id: Tab
+  label: string
+  hint: string
+}
 
-type Tab = (typeof TABS)[number]['id']
+type Tab =
+  | 'live'
+  | 'analyse'
+  | 'options'
+  | 'trade'
+  | 'orders'
+  | 'settings'
+  | 'history'
+  | 'backtest'
+
+// Grouped so the nav reads as three jobs rather than eight pages: watch the
+// market, act on it, and review what happened.
+const NAV: { group: string; tabs: NavTab[] }[] = [
+  {
+    group: 'Market',
+    tabs: [
+      { id: 'live', label: 'Live', hint: 'Chart, positions, and signals' },
+      { id: 'analyse', label: 'Analyse', hint: 'Score any symbol on demand' },
+      { id: 'options', label: 'Options', hint: 'Chain, option orders, option legs' },
+    ],
+  },
+  {
+    group: 'Trade',
+    tabs: [
+      { id: 'trade', label: 'Place order', hint: 'Manual equity orders' },
+      { id: 'orders', label: 'Orders', hint: 'Every order attempt, and why it failed' },
+      { id: 'settings', label: 'Settings', hint: 'Exit policy, risk, robotic trading' },
+    ],
+  },
+  {
+    group: 'Review',
+    tabs: [
+      { id: 'history', label: 'History', hint: 'Closed trades' },
+      { id: 'backtest', label: 'Backtest', hint: 'Replay the strategy on stored candles' },
+    ],
+  },
+]
+
+const ALL_TABS: NavTab[] = NAV.flatMap((g) => g.tabs)
 
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null)
@@ -141,6 +176,24 @@ export default function App() {
     return () => socket?.close()
   }, [refresh])
 
+  const account = status?.account
+  const risk = status?.risk
+  const live = status?.mode === 'live'
+  const totalPnl = account?.total_pnl ?? 0
+  const robotic = status?.robotic_trading ?? false
+
+  const guarded = async (action: () => Promise<unknown>) => {
+    setActing(true)
+    try {
+      await action()
+      await refresh()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setActing(false)
+    }
+  }
+
   const closePosition = async (sym: string) => {
     setClosing(sym)
     try {
@@ -153,69 +206,78 @@ export default function App() {
     }
   }
 
-  const killSwitch = async () => {
+  const killSwitch = () => {
     if (!confirm('Flatten every open position and stop trading for the day?')) return
-    setActing(true)
-    try {
-      await api.killSwitch()
-      await refresh()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setActing(false)
-    }
+    guarded(api.killSwitch)
   }
 
-  const resume = async () => {
-    setActing(true)
-    try {
-      await api.resume()
-      await refresh()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setActing(false)
+  const toggleRobotic = () => {
+    const enabling = !robotic
+    if (
+      enabling &&
+      !confirm(
+        'Arm robotic trading? Every cycle will scan the universe and place ' +
+          `${live ? 'REAL' : 'paper'} orders in the strongest candidates without asking.`,
+      )
+    ) {
+      return
     }
+    guarded(() => api.updateSettings({ robotic_trading: enabling }))
   }
-
-  const runCycle = async () => {
-    setActing(true)
-    try {
-      await api.runCycle()
-      await refresh()
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setActing(false)
-    }
-  }
-
-  const account = status?.account
-  const risk = status?.risk
-  const live = status?.mode === 'live'
-  const totalPnl = account?.total_pnl ?? 0
 
   return (
     <div className="app">
-      <div className="topbar">
-        <h1>Trading Dashboard</h1>
-        <span className={`badge ${live ? 'live' : 'paper'}`}>
-          <span className="dot" />
-          {live ? 'LIVE TRADING' : 'PAPER'}
-        </span>
-        <span className={`badge ${status?.connected ? 'ok' : 'off'}`}>
-          {status?.connected ? 'Breeze connected' : 'Breeze offline'}
-        </span>
-        <span className={`badge ${status?.market_open ? 'ok' : 'off'}`}>
-          {status?.market_open ? 'Market open' : 'Market closed'}
-        </span>
-        {risk?.halted && <span className="badge live">HALTED</span>}
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark">₹</span>
+          <span>
+            <strong>Trading Desk</strong>
+            <span className="brand-sub">ICICI Direct · Breeze</span>
+          </span>
+        </div>
+
+        <div className="pills">
+          <span className={`badge ${live ? 'live' : 'paper'}`}>
+            <span className="dot" />
+            {live ? 'LIVE TRADING' : 'PAPER'}
+          </span>
+          <span className={`badge ${status?.connected ? 'ok' : 'off'}`}>
+            {status?.connected ? 'Breeze connected' : 'Breeze offline'}
+          </span>
+          <span className={`badge ${status?.market_open ? 'ok' : 'off'}`}>
+            {status?.market_open ? 'Market open' : 'Market closed'}
+          </span>
+          {risk?.halted && <span className="badge live">HALTED</span>}
+        </div>
 
         <div className="spacer" />
 
-        <span className="dim" style={{ fontSize: 12 }}>
+        {/* The robotic switch lives here rather than in Settings because arming
+            it is the single most consequential thing on the page, and it must be
+            visible — and reversible — from wherever you happen to be. */}
+        <button
+          className={`robo ${robotic ? 'on' : ''}`}
+          onClick={toggleRobotic}
+          disabled={acting}
+          title={
+            robotic
+              ? 'Robotic trading is armed — the engine is placing orders on its own'
+              : 'Arm robotic trading: scan the universe and open the strongest candidates'
+          }
+        >
+          <span className="switch">
+            <span className="switch-track" data-on={robotic || undefined} />
+          </span>
+          <span>
+            Robotic
+            <span className="robo-state">{robotic ? 'ARMED' : 'off'}</span>
+          </span>
+        </button>
+
+        <span className="dim meta">
           {status?.interval} · {status?.cycles ?? 0} cycles
         </span>
+
         <button
           className="icon"
           onClick={toggleTheme}
@@ -224,11 +286,11 @@ export default function App() {
         >
           {theme === 'light' ? '🌙' : '☀️'}
         </button>
-        <button onClick={runCycle} disabled={acting || !status?.connected}>
+        <button onClick={() => guarded(api.runCycle)} disabled={acting || !status?.connected}>
           Run cycle
         </button>
         {risk?.halted ? (
-          <button onClick={resume} disabled={acting}>
+          <button onClick={() => guarded(api.resume)} disabled={acting}>
             Resume
           </button>
         ) : (
@@ -236,7 +298,7 @@ export default function App() {
             Kill switch
           </button>
         )}
-      </div>
+      </header>
 
       <TickerTape
         quotes={quotes}
@@ -254,6 +316,15 @@ export default function App() {
         <div className="notice error">
           <strong>Live mode is active.</strong> Real orders are being placed against your ICICI
           Direct account with real money.
+        </div>
+      )}
+
+      {robotic && (
+        <div className={`notice ${live ? 'error' : 'warn'}`}>
+          <strong>Robotic trading is armed.</strong> Each cycle scans the universe and
+          opens up to {status?.robotic_max_positions ?? 0} positions on its own
+          {live ? ' with real money' : ' on paper'}. Turn it off in the header, or use the
+          kill switch to flatten and stop.
         </div>
       )}
 
@@ -319,17 +390,25 @@ export default function App() {
         </div>
       )}
 
-      <div className="tabs">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            className={`tab ${tab === t.id ? 'active' : ''}`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
+      <nav className="nav">
+        {NAV.map((section) => (
+          <div className="nav-group" key={section.group}>
+            <span className="nav-group-label">{section.group}</span>
+            {section.tabs.map((t) => (
+              <button
+                key={t.id}
+                className={`tab ${tab === t.id ? 'active' : ''}`}
+                onClick={() => setTab(t.id)}
+                title={t.hint}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
         ))}
-      </div>
+      </nav>
+
+      <p className="tab-hint">{ALL_TABS.find((t) => t.id === tab)?.hint}</p>
 
       {tab === 'live' && (
         <div className="grid" style={{ gap: 16 }}>
@@ -373,13 +452,13 @@ export default function App() {
 
       {tab === 'orders' && <OrdersPanel />}
 
-      {tab === 'options' && <OptionChain />}
+      {tab === 'options' && <OptionChain mode={status?.mode ?? 'paper'} />}
+
+      {tab === 'settings' && <SettingsPanel onChanged={refresh} />}
 
       {tab === 'backtest' && <BacktestPanel symbols={status?.symbols ?? []} />}
 
-      {tab === 'history' && (
-        <TradesTable trades={trades} onRefresh={refresh} />
-      )}
+      {tab === 'history' && <TradesTable trades={trades} onRefresh={refresh} />}
     </div>
   )
 }

@@ -117,6 +117,9 @@ export default function OrdersPanel() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState('all')
+  // Equity and options orders share one table, but they are rarely reviewed
+  // together — an option row's price is a premium and its quantity is units.
+  const [product, setProduct] = useState('all')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -139,9 +142,14 @@ export default function OrdersPanel() {
   }, [load])
 
   const stats = history?.stats
-  const rows = (history?.orders ?? []).filter(
-    (o) => filter === 'all' || o.status === filter,
+  const all = history?.orders ?? []
+  const rows = all.filter(
+    (o) =>
+      (filter === 'all' || o.status === filter) &&
+      (product === 'all' ||
+        (product === 'options' ? o.product === 'options' : o.product !== 'options')),
   )
+  const optionCount = all.filter((o) => o.product === 'options').length
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -171,7 +179,15 @@ export default function OrdersPanel() {
               )}
             </>
           )}
+          {optionCount > 0 && (
+            <span className="badge off">{optionCount} options</span>
+          )}
           <div className="spacer" />
+          <select value={product} onChange={(e) => setProduct(e.target.value)}>
+            <option value="all">Equity &amp; options</option>
+            <option value="equity">Equity only</option>
+            <option value="options">Options only</option>
+          </select>
           <select value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="all">All</option>
             <option value="filled">Filled</option>
@@ -189,9 +205,9 @@ export default function OrdersPanel() {
         <div className="panel-body flush">
           {rows.length === 0 ? (
             <div className="empty">
-              {history?.orders.length
-                ? `No ${filter} orders.`
-                : 'No orders yet. Anything placed from the Trade tab appears here — including rejections and why they failed.'}
+              {all.length
+                ? `No matching orders.`
+                : 'No orders yet. Anything placed from the Trade or Options tab appears here — including rejections and why they failed.'}
             </div>
           ) : (
             <div className="table-scroll" style={{ maxHeight: 560 }}>
