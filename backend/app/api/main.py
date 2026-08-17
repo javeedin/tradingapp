@@ -661,6 +661,110 @@ def _num(value: Any) -> float | None:
 
 
 # ----------------------------------------------------------------------
+# Claude AI analysis for option chains
+# ----------------------------------------------------------------------
+@app.post("/api/claude/analyze")
+async def claude_analyze(payload: dict[str, Any]) -> dict[str, Any]:
+    """Analyze option chain using Claude AI to predict market movement and suggest strikes.
+
+    Requires CLAUDE_API_KEY environment variable to be set.
+    """
+    import os
+    import httpx
+
+    api_key = os.getenv("CLAUDE_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Claude API key not configured")
+
+    chain = payload.get("chain")
+    if not chain:
+        raise HTTPException(status_code=400, detail="Option chain data required")
+
+    # Build the analysis prompt
+    rows = chain.get("rows", [])
+    spot = chain.get("spot", 0)
+    symbol = chain.get("symbol", "Unknown")
+    expiry = chain.get("expiry", "Unknown")
+
+    # Get ATM strike
+    atm_strike = None
+    if rows and spot:
+        atm_strike = min(rows, key=lambda r: abs(r["strike"] - spot))["strike"]
+
+    # Build chain data for prompt
+    window_rows = rows
+    if atm_strike and len(rows) > 10:
+        atm_idx = next((i for i, r in enumerate(rows) if r["strike"] == atm_strike), None)
+        if atm_idx is not None:
+            window_rows = rows[max(0, atm_idx-5):min(len(rows), atm_idx+6)]
+
+    chain_data = "\n".join([
+        f"{r['strike']}: Call LTP={r['call']['ltp'] if r['call'] else '—'}, OI={r['call']['open_interest'] if r['call'] else 0} | "
+        f"Put LTP={r['put']['ltp'] if r['put'] else '—'}, OI={r['put']['open_interest'] if r['put'] else 0}"
+        for r in window_rows
+    ])
+
+    prompt = f"""Analyze this option chain for {symbol} expiring on {expiry}:
+
+Current Spot: {spot}
+Option Chain Data (Call & Put LTP with OI):
+{chain_data}
+
+Provide a JSON response with:
+{{
+  "marketMovement": "bullish|bearish|neutral",
+  "direction": "bullish|bearish|neutral",
+  "suggestedStrikes": [
+    {{"strike": number, "confidence": 0-1, "strategy": "string", "reasoning": "string", "side": "call|put"}}
+  ],
+  "reasoning": "market assessment",
+  "riskLevel": "low|medium|high"
+}}"""
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-3-5-sonnet-20241022",
+                    "max_tokens": 1024,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=30.0,
+            )
+
+            if response.status_code != 200:
+                error_detail = response.text
+                try:
+                    error_json = response.json()
+                    error_detail = error_json.get("error", {}).get("message", error_detail)
+                except:
+                    pass
+                raise HTTPException(status_code=502, detail=f"Claude API error: {error_detail}")
+
+            result = response.json()
+            content = result.get("content", [{}])[0].get("text", "")
+
+            # Parse JSON from response
+            import json as json_lib
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                analysis = json_lib.loads(json_match.group())
+                return analysis
+            else:
+                raise HTTPException(status_code=502, detail="Failed to parse Claude response")
+
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Claude API connection error: {str(e)}")
+
+
+# ----------------------------------------------------------------------
 # Broker-side positions (including ones bought by hand)
 # ----------------------------------------------------------------------
 @app.get("/api/broker/positions")

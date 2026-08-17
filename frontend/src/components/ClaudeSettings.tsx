@@ -1,80 +1,34 @@
-import { useState, useEffect } from 'react'
-
 interface ClaudeSettingsProps {
   onClose: () => void
 }
 
 export default function ClaudeSettings({ onClose }: ClaudeSettingsProps) {
-  const [apiKey, setApiKey] = useState('')
-  const [saved, setSaved] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const saved = localStorage.getItem('claude_api_key')
-    if (saved) {
-      setApiKey('•'.repeat(20))
-    }
-  }, [])
-
-  const handleSave = () => {
-    if (!apiKey || apiKey.includes('•')) {
-      setError('Please enter a valid API key')
-      return
-    }
-    try {
-      localStorage.setItem('claude_api_key', apiKey)
-      setSaved(true)
-      setError(null)
-      setTimeout(() => {
-        setSaved(false)
-        onClose()
-      }, 1500)
-    } catch (err) {
-      setError('Failed to save API key')
-    }
-  }
-
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <span>Claude API Configuration</span>
+          <span>Claude AI Configuration</span>
           <button className="close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
-          <div className="form-group">
-            <label>Claude API Key</label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value)
-                setSaved(false)
-              }}
-              placeholder="sk-ant-..."
-              style={{ width: '100%', marginTop: 8 }}
-            />
-            <div style={{ fontSize: 12, marginTop: 8, color: 'var(--text-secondary)' }}>
-              Your API key is stored locally in your browser and never sent to our servers.
-            </div>
+          <div style={{ lineHeight: 1.6 }}>
+            <h3 style={{ marginTop: 0 }}>Claude AI Setup</h3>
+            <p>
+              Claude AI analysis for option chains is configured on the server side. To enable it:
+            </p>
+            <ol>
+              <li>Get your Claude API key from <a href="https://console.anthropic.com" target="_blank" rel="noreferrer">console.anthropic.com</a></li>
+              <li>Set the environment variable: <code style={{ background: 'var(--panel-alt)', padding: '4px 8px', borderRadius: 4 }}>CLAUDE_API_KEY=sk-ant-...</code></li>
+              <li>Restart the backend service</li>
+            </ol>
+            <p style={{ fontSize: 13, color: 'var(--text-dim)' }}>
+              Your API key is kept secure on the server and never exposed to the browser.
+            </p>
           </div>
-
-          {error && (
-            <div className="notice error" style={{ marginTop: 12 }}>
-              {error}
-            </div>
-          )}
-
-          {saved && (
-            <div className="notice ok" style={{ marginTop: 12 }}>
-              API key saved successfully
-            </div>
-          )}
         </div>
         <div className="modal-foot">
-          <button onClick={onClose}>Cancel</button>
-          <button className="primary" onClick={handleSave}>
-            Save API Key
+          <button className="primary" onClick={onClose}>
+            Close
           </button>
         </div>
       </div>
