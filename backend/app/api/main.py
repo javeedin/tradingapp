@@ -45,6 +45,7 @@ from app.models import (
 from app.risk.manager import RiskManager
 from app.strategy import indicators
 from app.strategy.signals import SignalEngine
+from app.engine.stock_screener import StockScreener
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -60,7 +61,7 @@ CYCLE_SECONDS = {
     "1day": 3600,
 }
 
-state: dict[str, Any] = {"trader": None, "scheduler": None, "ticker": None}
+state: dict[str, Any] = {"trader": None, "scheduler": None, "ticker": None, "screener": None}
 
 
 def get_ticker() -> LiveTicker | None:
@@ -105,6 +106,9 @@ async def lifespan(app: FastAPI):
     trader = build_trader()
     state["trader"] = trader
 
+    screener = StockScreener(trader.client)
+    state["screener"] = screener
+
     scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
     interval = CYCLE_SECONDS.get(settings.candle_interval, 300)
 
@@ -122,8 +126,19 @@ async def lifespan(app: FastAPI):
     async def new_day_job() -> None:
         trader.start_day()
 
+    async def screener_job() -> None:
+        """Run stock screener every 5 minutes during market hours."""
+        if not is_market_open():
+            return
+        try:
+            result = await asyncio.to_thread(screener.screen_stocks)
+            await broadcast({"type": "screener", "data": result})
+        except Exception:
+            logger.exception("Stock screener job failed")
+
     scheduler.add_job(cycle_job, "interval", seconds=interval, id="cycle")
     scheduler.add_job(new_day_job, "cron", hour=9, minute=10, id="new_day")
+    scheduler.add_job(screener_job, "cron", hour="9-15", minute="*/5", id="screener")
     scheduler.start()
     state["scheduler"] = scheduler
     # The ticker runs on its own threads and needs a handle on this loop to
@@ -1460,6 +1475,41 @@ async def run_backtest(request: BacktestRequest) -> dict[str, Any]:
     payload["bars"] = {s: len(f) for s, f in data.items()}
     payload["summary"] = result.summary_text()
     return payload
+
+
+# ----------------------------------------------------------------------
+# Stock Screener
+# ----------------------------------------------------------------------
+@app.get("/api/screener/latest")
+async def get_latest_screener_results() -> dict[str, Any]:
+    """Get latest stock screener results."""
+    screener = state.get("screener")
+    if screener is None:
+        raise HTTPException(status_code=503, detail="Screener not initialized")
+
+    result = await asyncio.to_thread(screener.get_latest_scan)
+    if result is None:
+        return {
+            "scan_timestamp": datetime.now().isoformat(),
+            "candidates": [],
+            "total_candidates": 0,
+            "message": "No scans available yet",
+        }
+
+    return result
+
+
+@app.post("/api/screener/scan")
+async def trigger_screener_scan(symbols: list[str] | None = None) -> dict[str, Any]:
+    """Manually trigger a stock screener scan."""
+    screener = state.get("screener")
+    if screener is None:
+        raise HTTPException(status_code=503, detail="Screener not initialized")
+
+    result = await asyncio.to_thread(screener.screen_stocks, symbols)
+    await broadcast({"type": "screener", "data": result})
+
+    return result
 
 
 # ----------------------------------------------------------------------
