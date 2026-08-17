@@ -762,7 +762,8 @@ Provide a JSON response with:
                 analysis = json_lib.loads(json_match.group())
                 return analysis
             else:
-                raise HTTPException(status_code=502, detail=f"Failed to parse Claude response:\n\nFull response:\n{content}")
+                full_response = json_lib.dumps(result, indent=2)
+                raise HTTPException(status_code=502, detail=f"Failed to parse Claude response:\n\nExtracted text:\n{content}\n\nFull API response:\n{full_response}")
 
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Claude API connection error: {str(e)}")
