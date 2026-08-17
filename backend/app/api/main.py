@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -664,7 +664,7 @@ def _num(value: Any) -> float | None:
 # Claude AI analysis for option chains
 # ----------------------------------------------------------------------
 @app.post("/api/claude/analyze")
-async def claude_analyze(payload: dict[str, Any]) -> dict[str, Any]:
+async def claude_analyze(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Analyze option chain using Claude AI to predict market movement and suggest strikes.
 
     Requires CLAUDE_API_KEY environment variable to be set.
