@@ -141,13 +141,20 @@ cd frontend && npm run build    # typecheck + build
 
 ## The daily ritual
 
-Breeze session tokens are same-day only. Every trading morning:
+Breeze session tokens are same-day only, and there is no refresh-token flow, so
+this cannot be fully automated. Every trading morning:
 
-1. Open the **Breeze login** button on the dashboard (or
-   `https://api.icicidirect.com/apiuser/login?api_key=<your-key>`).
+1. Click **Open Breeze login** on the dashboard.
 2. Log in to ICICI Direct.
-3. Copy the `API_Session` value out of the redirected URL.
-4. Paste it into the dashboard and hit **Connect**.
+
+That's it. Breeze redirects back to the dashboard with the token in the URL; the
+session panel reads it, connects automatically, and strips it from the address
+bar so it doesn't linger in browser history. The manual paste box is still there
+as a fallback.
+
+For this to work, the **Redirect URL** registered on your Breeze app must point
+at the dashboard — `http://localhost:5173` for local development, or your
+deployed dashboard URL on a server.
 
 The system backfills history automatically on connect and starts scoring on the
 next cycle. Without this step the engine runs but every cycle reports
