@@ -35,6 +35,14 @@ const HEALTH_POLL_MS = 400
 let backend = null
 let mainWindow = null
 let shuttingDown = false
+// True when a backend was already running and we attached to it rather than
+// starting our own. We must not kill a process we did not start.
+let adoptedExistingBackend = false
+// Whether we spawned a backend, and whether the dashboard ever loaded. Together
+// these decide if an exit is a startup failure (reported once, by the startup
+// path) or a crash during use (reported by the exit handler).
+let backendSpawned = false
+let dashboardLoaded = false
 const backendLog = []
 
 /** Remember recent backend output so a startup failure can be shown to the user. */
@@ -97,13 +105,33 @@ function startBackend() {
   backend.on('exit', (code, signal) => {
     console.log(`[desktop] backend exited code=${code} signal=${signal}`)
     backend = null
-    if (!shuttingDown && mainWindow) {
+    // A failure before the dashboard ever loaded is a startup failure; the
+    // startup path reports it with a diagnosis. Reporting here too would show
+    // the user two dialogs for one problem.
+    if (!shuttingDown && dashboardLoaded && mainWindow) {
       dialog.showErrorBox(
         'Backend stopped',
         `The Python backend exited unexpectedly (code ${code}).\n\n` +
           `Last output:\n${backendLog.slice(-15).join('')}`,
       )
     }
+  })
+
+  backendSpawned = true
+}
+
+/** Single health probe. Resolves true if something is already serving. */
+function probeBackend(timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const request = http.get(`${BASE_URL}/api/health`, (response) => {
+      response.resume()
+      resolve(response.statusCode === 200)
+    })
+    request.on('error', () => resolve(false))
+    request.setTimeout(timeoutMs, () => {
+      request.destroy()
+      resolve(false)
+    })
   })
 }
 
@@ -129,6 +157,12 @@ function waitForBackend() {
     }
 
     const retry = () => {
+      // If the process we started has already died there is nothing to wait
+      // for — fail immediately rather than burning the full timeout.
+      if (backendSpawned && backend === null) {
+        reject(new Error('The Python backend exited during startup'))
+        return
+      }
       if (Date.now() > deadline) {
         reject(new Error(`Backend did not respond within ${HEALTH_TIMEOUT_MS / 1000}s`))
         return
@@ -192,6 +226,9 @@ function createWindow() {
 }
 
 function stopBackend() {
+  // Never kill a backend we did not start — the user may be running it in a
+  // terminal deliberately, and closing this window should not take it down.
+  if (adoptedExistingBackend) return
   if (!backend || backend.killed) return
   const pid = backend.pid
   console.log(`[desktop] stopping backend pid=${pid}`)
@@ -218,19 +255,45 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
-  startBackend()
+
+  // Attach to a backend that is already running rather than starting a second
+  // one. The database is DuckDB, which allows a single writer, so a second
+  // instance would crash on startup unable to open the file — and it would
+  // take the port too. This makes "already running in a terminal" work instead
+  // of failing.
+  adoptedExistingBackend = await probeBackend()
+
+  if (adoptedExistingBackend) {
+    console.log('[desktop] found a backend already running — attaching to it')
+  } else {
+    startBackend()
+  }
 
   try {
     await waitForBackend()
-    if (mainWindow) await mainWindow.loadURL(BASE_URL)
+    if (mainWindow) {
+      await mainWindow.loadURL(BASE_URL)
+      dashboardLoaded = true
+    }
   } catch (err) {
     if (mainWindow) {
       mainWindow.loadURL(loadingPage('Backend failed to start.'))
     }
+
+    const output = backendLog.join('')
+    // The single-writer conflict is the one failure users actually hit, and
+    // its raw traceback buries the cause. Name it directly.
+    const locked = /being used by another process|Conflicting lock|already open/i.test(output)
+
     dialog.showErrorBox(
-      'Backend did not start',
-      `${err.message}\n\nLast output:\n${backendLog.slice(-15).join('') || '(no output)'}\n\n` +
-        'Check that dependencies are installed:\n    pip install -e ".[dev]"',
+      locked ? 'Another instance is already running' : 'Backend did not start',
+      locked
+        ? 'The database is locked by another process.\n\n' +
+            'A backend is already running — most likely "python -m app.api.main" ' +
+            'in a terminal, or another copy of this app.\n\n' +
+            'Close it, then start this app again.'
+        : `${err.message}\n\nLast output:\n${backendLog.slice(-15).join('') || '(no output)'}\n\n` +
+            'Check that dependencies are installed:\n    pip install -e ".[dev]"',
     )
   }
 })

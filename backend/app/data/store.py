@@ -77,6 +77,15 @@ CREATE INDEX IF NOT EXISTS idx_trades_exit ON trades (exit_time);
 CANDLE_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 
 
+class DatabaseLockedError(RuntimeError):
+    """The DuckDB file is held by another process.
+
+    DuckDB allows one writer, so running two backends against the same file is
+    not possible. This exists to say that plainly instead of surfacing a raw
+    IOException.
+    """
+
+
 class MarketStore:
     """Thread-safe store for market data and trading history.
 
@@ -89,7 +98,20 @@ class MarketStore:
         self.db_path = Path(db_path) if db_path else settings.db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._conn = duckdb.connect(str(self.db_path))
+
+        try:
+            self._conn = duckdb.connect(str(self.db_path))
+        except duckdb.IOException as exc:
+            # DuckDB permits a single writing process. The raw error is a wall
+            # of traceback that buries the actual cause, which is almost always
+            # a second copy of the app rather than a corrupt database.
+            raise DatabaseLockedError(
+                f"Cannot open {self.db_path} — it is locked by another process.\n"
+                "Another backend is already running (a terminal running "
+                "'python -m app.api.main', or the desktop app). Close it and retry.\n"
+                f"Original error: {exc}"
+            ) from exc
+
         self._init_schema()
 
     def _init_schema(self) -> None:
