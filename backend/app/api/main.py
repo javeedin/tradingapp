@@ -731,7 +731,6 @@ Provide a JSON response with:
                 "https://api.anthropic.com/v1/messages",
                 headers={
                     "x-api-key": api_key,
-                    "anthropic-version": "2024-01-15",
                     "content-type": "application/json",
                 },
                 json={
