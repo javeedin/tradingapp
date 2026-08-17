@@ -9,6 +9,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Body
 from fastapi.middleware.cors import CORSMiddleware
