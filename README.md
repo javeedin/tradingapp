@@ -108,6 +108,23 @@ intraday leverage to hold those positions.
 
 ## Quick start
 
+### From the repo root
+
+The root `package.json` is a task runner only — it has no dependencies of its
+own. It exists so the obvious command works from the obvious place, instead of
+failing on a missing `package.json` because you were one directory up:
+
+```bash
+npm run setup       # install frontend + desktop dependencies
+npm run build       # build the dashboard
+npm run desktop     # build, then launch the desktop app
+npm run dev         # Vite dev server on :5173
+npm run backend     # Python API on :8000
+npm test            # pytest + frontend typecheck
+```
+
+The per-directory commands below still work and are equivalent.
+
 ### Backend
 
 ```bash

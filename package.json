@@ -1,0 +1,16 @@
+{
+  "name": "tradingapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Signal-driven trading system for ICICI Direct (Breeze) — repo root task runner",
+  "scripts": {
+    "setup": "npm --prefix frontend install && npm --prefix desktop install",
+    "build": "npm --prefix frontend run build",
+    "dev": "npm --prefix frontend run dev",
+    "typecheck": "npm --prefix frontend run typecheck",
+    "desktop": "npm --prefix frontend run build && npm --prefix desktop start",
+    "backend": "cd backend && python -m app.api.main",
+    "pytest": "cd backend && python -m pytest -q",
+    "test": "npm run pytest && npm run typecheck"
+  }
+}
