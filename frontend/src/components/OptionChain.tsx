@@ -291,6 +291,24 @@ export default function OptionChain({ mode }: { mode: string }) {
   return (
     <div className="grid" style={{ gap: 16 }}>
       {showClaudeSettings && <ClaudeSettings onClose={() => setShowClaudeSettings(false)} />}
+      {claudeError && (
+        <div className="modal-overlay" onClick={() => setClaudeError(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 700 }}>
+            <div className="modal-head">
+              <span>Analysis Error</span>
+              <button className="close" onClick={() => setClaudeError(null)}>×</button>
+            </div>
+            <div className="modal-body" style={{ maxHeight: 600, overflowY: 'auto' }}>
+              <div style={{ padding: 16, background: 'rgba(211,47,54,0.1)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, fontFamily: 'monospace', lineHeight: 1.5 }}>
+                {claudeError}
+              </div>
+            </div>
+            <div className="modal-foot">
+              <button onClick={() => setClaudeError(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
       {claudeAnalysis && (
         <ClaudeAnalysis
           analysis={claudeAnalysis}
@@ -411,18 +429,11 @@ export default function OptionChain({ mode }: { mode: string }) {
               <strong>B</strong> buy · <strong>W</strong> write
             </span>
           </div>
-          {(claudeError || analyzingClaude) && (
+          {analyzingClaude && (
             <div className="panel-body" style={{ paddingBottom: 0 }}>
-              {claudeError && (
-                <div className="notice error" style={{ marginBottom: 0 }}>
-                  {claudeError}
-                </div>
-              )}
-              {analyzingClaude && (
-                <div className="notice info" style={{ marginBottom: 0 }}>
-                  Analyzing with Claude...
-                </div>
-              )}
+              <div className="notice info" style={{ marginBottom: 0 }}>
+                Analyzing with Claude...
+              </div>
             </div>
           )}
           <div className="panel-body flush">
