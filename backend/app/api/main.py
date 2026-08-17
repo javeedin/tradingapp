@@ -735,7 +735,7 @@ Provide a JSON response with:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-opus-4-1-20250805",
+                    "model": "claude-3-5-sonnet-20241022",
                     "max_tokens": 1024,
                     "messages": [{"role": "user", "content": prompt}],
                 },

@@ -4,6 +4,7 @@ import OptionOrderDialog, { type OptionDraft } from './OptionOrderDialog'
 import OptionPositions from './OptionPositions'
 import ClaudeSettings from './ClaudeSettings'
 import ClaudeAnalysis from './ClaudeAnalysis'
+import AnalysisProgress from './AnalysisProgress'
 import { analyzeOptionChain } from '../claudeAPI'
 import type { ExpiryCandidate, OptionChainResponse, OptionLeg } from '../types'
 import type { ClaudeAnalysisResult } from '../claudeAPI'
@@ -102,6 +103,14 @@ export default function OptionChain({ mode }: { mode: string }) {
   const [claudeAnalysis, setClaudeAnalysis] = useState<ClaudeAnalysisResult | null>(null)
   const [analyzingClaude, setAnalyzingClaude] = useState(false)
   const [claudeError, setClaudeError] = useState<string | null>(null)
+  const [progressSteps, setProgressSteps] = useState<
+    { name: string; completed: boolean; error?: string }[]
+  >([
+    { name: 'Validating option chain data', completed: false },
+    { name: 'Connecting to Claude AI', completed: false },
+    { name: 'Analyzing market movement', completed: false },
+    { name: 'Generating strike suggestions', completed: false },
+  ])
 
   // The ATM row, so the chain can open centred on it. A chain that opens at the
   // top of the strike range shows only deep in-the-money calls — technically
@@ -224,11 +233,44 @@ export default function OptionChain({ mode }: { mode: string }) {
     if (!chain) return
     setAnalyzingClaude(true)
     setClaudeError(null)
+
+    const updateStep = (stepIndex: number, completed: boolean, error?: string) => {
+      setProgressSteps((prev) => {
+        const updated = [...prev]
+        updated[stepIndex] = { ...updated[stepIndex], completed, error }
+        return updated
+      })
+    }
+
     try {
+      // Step 1: Validate data
+      updateStep(0, true)
+      await new Promise((resolve) => setTimeout(resolve, 300))
+
+      // Step 2: Connecting
+      updateStep(1, true)
+      await new Promise((resolve) => setTimeout(resolve, 500))
+
+      // Step 3: Analyzing
+      updateStep(2, true)
+
+      // Step 4: Generating
       const result = await analyzeOptionChain(chain)
+      updateStep(3, true)
+
       setClaudeAnalysis(result)
     } catch (err) {
-      setClaudeError((err as Error).message)
+      const error = (err as Error).message
+      setClaudeError(error)
+
+      // Mark failed step
+      if (error.includes('API key')) {
+        updateStep(1, false, 'API key not configured')
+      } else if (error.includes('connect')) {
+        updateStep(1, false, 'Connection failed')
+      } else {
+        updateStep(3, false, error)
+      }
     } finally {
       setAnalyzingClaude(false)
     }
@@ -267,6 +309,8 @@ export default function OptionChain({ mode }: { mode: string }) {
           }}
         />
       )}
+
+      <AnalysisProgress isOpen={analyzingClaude} steps={progressSteps} />
 
       <OptionPositions refreshKey={placed} />
 
@@ -331,7 +375,7 @@ export default function OptionChain({ mode }: { mode: string }) {
                   disabled={analyzingClaude}
                   title="Use Claude to analyze market movement and suggest strikes"
                 >
-                  {analyzingClaude ? 'Analyzing…' : '🤖 Claude AI'}
+                  {analyzingClaude ? 'Analyzing…' : '🔍 Analysize'}
                 </button>
               </>
             )}
