@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, formatCurrency, formatNumber } from './api'
 import AnalysePanel from './components/AnalysePanel'
 import BacktestPanel from './components/BacktestPanel'
+import ClaudeOptionTrades from './components/ClaudeOptionTrades'
 import EventLog from './components/EventLog'
 import OptionChain from './components/OptionChain'
 import OrdersPanel from './components/OrdersPanel'
@@ -43,6 +44,7 @@ type Tab =
   | 'analyse'
   | 'options'
   | 'strikes'
+  | 'claude-trades'
   | 'screener'
   | 'robotic'
   | 'trade'
@@ -69,6 +71,7 @@ const NAV: { group: string; tabs: NavTab[] }[] = [
       { id: 'trade', label: 'Place order', hint: 'Manual equity orders' },
       { id: 'robotic', label: 'Robotic', hint: 'Automated trading picks' },
       { id: 'strikes', label: 'Strikes', hint: 'Live option chain strike prices' },
+      { id: 'claude-trades', label: 'Claude Trades', hint: 'AI-driven option trades' },
       { id: 'orders', label: 'Orders', hint: 'Every order attempt, and why it failed' },
       { id: 'settings', label: 'Settings', hint: 'Exit policy, risk, robotic trading' },
     ],
@@ -526,6 +529,8 @@ export default function App() {
       {tab === 'robotic' && <RoboticPanel />}
 
       {tab === 'strikes' && <StrikePrices />}
+
+      {tab === 'claude-trades' && <ClaudeOptionTrades />}
 
       {tab === 'orders' && <OrdersPanel />}
 

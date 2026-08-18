@@ -1513,6 +1513,84 @@ async def trigger_screener_scan(symbols: list[str] | None = None) -> dict[str, A
 
 
 # ----------------------------------------------------------------------
+# Claude AI Option Trading
+# ----------------------------------------------------------------------
+@app.post("/api/options/claude-decision")
+async def get_claude_option_decision(payload: dict[str, Any]) -> dict[str, Any]:
+    """Get Claude's recommendation for option trading based on strike chain analysis."""
+    try:
+        from anthropic import Anthropic
+
+        underlying = payload.get("underlying", "NIFTY")
+        chain = payload.get("chain", {})
+
+        rows = chain.get("rows", [])
+        spot = chain.get("spot", 0)
+
+        if not rows or not spot:
+            raise ValueError("Invalid option chain data")
+
+        # Format chain data for Claude analysis
+        chain_summary = f"""
+Current Option Chain for {underlying}:
+Spot: ₹{spot}
+Expiry: {chain.get('expiry', 'unknown')}
+
+Available Strikes (Call Bid/LTP/Ask → Put Ask/LTP/Bid):
+"""
+        for row in rows[-15:]:  # Show last 15 strikes
+            strike = row.get("strike", 0)
+            call = row.get("call") or {}
+            put = row.get("put") or {}
+            chain_summary += f"\n{strike}: {call.get('bid', '-')}/{call.get('ltp', '-')}/{call.get('ask', '-')} → {put.get('ask', '-')}/{put.get('ltp', '-')}/{put.get('bid', '-')}"
+
+        # Get Claude's analysis
+        client = Anthropic()
+        response = client.messages.create(
+            model="claude-opus-5",
+            max_tokens=500,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""Analyze this option chain and recommend ONE call option strike to buy for intraday trading.
+
+{chain_summary}
+
+Respond ONLY with valid JSON (no markdown, no code blocks):
+{{
+  "strike": <best_strike_number>,
+  "side": "BUY",
+  "confidence": <0-100>,
+  "reasoning": "<brief explanation why>",
+  "entry_target": <recommended_entry_price>,
+  "stop_loss": <stop_loss_price>,
+  "target": <profit_target_price>,
+  "risk_reward_ratio": <number>
+}}
+
+Focus on: 1) Liquidity (tight bid-ask spread), 2) Near ATM for intraday, 3) Volume, 4) Risk/Reward ratio of 1:2 or better.
+Confidence should reflect bid-ask spread quality and your conviction level."""
+                }
+            ],
+        )
+
+        # Parse Claude's response
+        response_text = response.content[0].text.strip()
+        # Remove markdown code blocks if present
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+
+        decision = json.loads(response_text)
+        return decision
+
+    except Exception as e:
+        logger.exception("Claude option decision failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ----------------------------------------------------------------------
 # Static frontend
 # ----------------------------------------------------------------------
 # Mounted last so it never shadows an /api route. When the dashboard has been
