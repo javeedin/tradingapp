@@ -46,6 +46,7 @@ export default function ClaudeOptionTrades() {
     if (!chain) return
 
     setAnalyzing(true)
+    setError(null)
     try {
       const response = await fetch('/api/options/claude-decision', {
         method: 'POST',
@@ -56,12 +57,18 @@ export default function ClaudeOptionTrades() {
         }),
       })
 
-      if (!response.ok) throw new Error('Failed to get Claude decision')
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        const errorMsg = errorData.detail || `HTTP ${response.status}: ${response.statusText}`
+        throw new Error(`Backend Error: ${errorMsg}`)
+      }
       const result = await response.json()
       setDecision(result)
       setError(null)
     } catch (err) {
-      setError((err as Error).message)
+      const errorMessage = (err as Error).message
+      console.error('Claude decision error:', errorMessage)
+      setError(errorMessage)
     } finally {
       setAnalyzing(false)
     }
@@ -135,7 +142,42 @@ export default function ClaudeOptionTrades() {
       </div>
 
       <div className="panel-body">
-        {error && <div className="notice error" style={{ marginBottom: 12 }}>{error}</div>}
+        {error && (
+          <div className="notice error" style={{ marginBottom: 12, padding: 12 }}>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>Error</div>
+            <div style={{ fontSize: 12, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {error}
+            </div>
+            <div style={{ fontSize: 11, marginTop: 8, color: 'var(--text-secondary)' }}>
+              <strong>Troubleshooting:</strong>
+              <ul style={{ margin: '4px 0 0 20px', padding: 0 }}>
+                <li>Ensure backend server is running</li>
+                <li>Check ANTHROPIC_API_KEY environment variable is set</li>
+                <li>Try clicking "Ask Claude" again</li>
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {analyzing && (
+          <div style={{
+            padding: 20,
+            textAlign: 'center',
+            background: 'rgba(100,150,255,0.05)',
+            borderRadius: 6,
+            marginBottom: 20,
+            border: '1px solid var(--border)'
+          }}>
+            <div style={{ fontSize: 24, marginBottom: 12 }}>🤔</div>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Claude is analyzing...</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+              Examining strike prices and evaluating trading opportunities
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              This may take a few seconds...
+            </div>
+          </div>
+        )}
 
         {/* Claude Decision Section */}
         {decision && (
