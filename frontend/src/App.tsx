@@ -90,6 +90,8 @@ export default function App() {
   const [events, setEvents] = useState<EngineEvent[]>([])
   const [quotes, setQuotes] = useState<Quote[]>([])
   const [tickerStatus, setTickerStatus] = useState<TickerStatus | null>(null)
+  const [niftyQuote, setNiftyQuote] = useState<Quote | null>(null)
+  const [bankniftyQuote, setBankniftyQuote] = useState<Quote | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('live')
   const [symbol, setSymbol] = useState('')
@@ -138,16 +140,18 @@ export default function App() {
 
     const pull = async () => {
       try {
-        const [data, ...indexQuotes] = await Promise.all([
+        const [data, banknifty, nifty, finnifty] = await Promise.all([
           api.ticker(),
           api.quote('BANKNIFTY'),
           api.quote('NIFTY50'),
           api.quote('FINNIFTY'),
         ])
         if (cancelled) return
-        const allQuotes = [...indexQuotes.filter((q): q is Quote => q !== null), ...data.quotes]
-        setQuotes(allQuotes)
+        const allQuotes = [banknifty, nifty, finnifty].filter((q): q is Quote => q !== null)
+        setQuotes([...allQuotes, ...data.quotes])
         setTickerStatus(data.status)
+        setBankniftyQuote(banknifty)
+        setNiftyQuote(nifty)
       } catch {
         // Prices are non-critical; the main poll surfaces real outages.
       }
@@ -261,6 +265,25 @@ export default function App() {
             {status?.market_open ? 'Market open' : 'Market closed'}
           </span>
           {risk?.halted && <span className="badge live">HALTED</span>}
+        </div>
+
+        <div className="pills" style={{ gap: 8 }}>
+          {niftyQuote && (
+            <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, background: 'rgba(100,100,100,0.1)' }}>
+              NIFTY {formatNumber(niftyQuote.price)}
+              <span style={{ marginLeft: 4, color: niftyQuote.change_pct >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                {niftyQuote.change_pct >= 0 ? '▲' : '▼'} {formatNumber(Math.abs(niftyQuote.change_pct))}%
+              </span>
+            </span>
+          )}
+          {bankniftyQuote && (
+            <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, background: 'rgba(100,100,100,0.1)' }}>
+              BANKNIFTY {formatNumber(bankniftyQuote.price)}
+              <span style={{ marginLeft: 4, color: bankniftyQuote.change_pct >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                {bankniftyQuote.change_pct >= 0 ? '▲' : '▼'} {formatNumber(Math.abs(bankniftyQuote.change_pct))}%
+              </span>
+            </span>
+          )}
         </div>
 
         <div className="spacer" />
