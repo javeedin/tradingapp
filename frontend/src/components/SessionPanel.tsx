@@ -52,6 +52,8 @@ function stripTokenFromUrl(): void {
   )
 }
 
+const STORAGE_KEY = 'breeze_session_token'
+
 /**
  * Breeze session tokens expire daily, so there is no way to keep the bot
  * running unattended across days without re-authenticating each morning.
@@ -67,6 +69,7 @@ export default function SessionPanel({
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: string; text: string } | null>(null)
   const [autoDetected, setAutoDetected] = useState(false)
+  const [hasSavedToken, setHasSavedToken] = useState(false)
 
   // StrictMode runs effects twice in development. Without this guard the
   // auto-connect would fire two session requests on a single redirect.
@@ -87,6 +90,8 @@ export default function SessionPanel({
             ? `Session established, but backfill failed: ${result.backfill_error}`
             : result.message,
         })
+        localStorage.setItem(STORAGE_KEY, trimmed)
+        setHasSavedToken(true)
         setToken('')
         setAutoDetected(false)
         onConnected()
@@ -107,24 +112,38 @@ export default function SessionPanel({
     [onConnected],
   )
 
+  const clearSavedToken = () => {
+    localStorage.removeItem(STORAGE_KEY)
+    setHasSavedToken(false)
+    setMessage({ kind: 'success', text: 'Saved session cleared.' })
+  }
+
   useEffect(() => {
     if (autoConnectAttempted.current) return
 
+    // Try redirect token first
     const detected = readTokenFromUrl()
-    if (!detected) return
-
-    autoConnectAttempted.current = true
-    setToken(detected)
-    setAutoDetected(true)
-    // Clear it from the URL immediately — a refresh should not replay a
-    // stale token, and it should not sit in browser history.
-    stripTokenFromUrl()
-
-    if (!connected) {
-      void connect(detected, true)
+    if (detected) {
+      autoConnectAttempted.current = true
+      setToken(detected)
+      setAutoDetected(true)
+      stripTokenFromUrl()
+      if (!connected) {
+        void connect(detected, true)
+      }
+      return
     }
-    // Intentionally runs once on mount: the redirect token is only ever
-    // present on the initial load after returning from Breeze.
+
+    // Fall back to saved token
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved && !connected) {
+      autoConnectAttempted.current = true
+      setHasSavedToken(true)
+      void connect(saved, true)
+    } else if (saved) {
+      setHasSavedToken(true)
+    }
+    // Intentionally runs once on mount: tokens are only auto-loaded on init.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -146,6 +165,27 @@ export default function SessionPanel({
         )}
       </div>
       <div className="panel-body">
+        {hasSavedToken && (
+          <div className="notice info">
+            Session token saved locally.{' '}
+            <button
+              type="button"
+              onClick={clearSavedToken}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--blue)',
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                padding: 0,
+                font: 'inherit',
+              }}
+            >
+              Clear it
+            </button>
+          </div>
+        )}
+
         {!connected && !autoDetected && (
           <div className="notice info">
             The Breeze session token expires every day. Click <strong>Open Breeze login</strong>,
