@@ -13,6 +13,7 @@ import SessionPanel from './components/SessionPanel'
 import SettingsPanel from './components/SettingsPanel'
 import SignalsPanel from './components/SignalsPanel'
 import StockScreener from './components/StockScreener'
+import StrikePrices from './components/StrikePrices'
 import TickerTape from './components/TickerTape'
 import TradePanel from './components/TradePanel'
 import TradesTable from './components/TradesTable'
@@ -42,6 +43,7 @@ type Tab =
   | 'live'
   | 'analyse'
   | 'options'
+  | 'strikes'
   | 'screener'
   | 'robotic'
   | 'trade'
@@ -67,6 +69,7 @@ const NAV: { group: string; tabs: NavTab[] }[] = [
     tabs: [
       { id: 'trade', label: 'Place order', hint: 'Manual equity orders' },
       { id: 'robotic', label: 'Robotic', hint: 'Automated trading picks' },
+      { id: 'strikes', label: 'Strikes', hint: 'Live option chain strike prices' },
       { id: 'orders', label: 'Orders', hint: 'Every order attempt, and why it failed' },
       { id: 'settings', label: 'Settings', hint: 'Exit policy, risk, robotic trading' },
     ],
@@ -165,32 +168,65 @@ export default function App() {
     }
   }, [])
 
-  // The websocket pushes cycle results the moment they happen, so entries and
-  // exits surface without waiting for the next poll.
+  // The websocket pushes cycle results and ticker updates the moment they happen.
+  // This provides live price updates without waiting for the next poll.
   useEffect(() => {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
     let socket: WebSocket | null = null
-    try {
-      socket = new WebSocket(`${protocol}://${location.host}/ws`)
-      socket.onmessage = (event) => {
-        const payload = JSON.parse(event.data)
-        if (payload.type === 'cycle' || payload.type === 'kill_switch') refresh()
-        if (payload.type === 'ticker' && Array.isArray(payload.data)) {
-          // Merge rather than replace: a push may carry only the symbols that
-          // moved, and dropping the rest would blank the tape.
-          setQuotes((current) => {
-            const byMostRecent = new Map(current.map((q) => [q.symbol, q]))
-            for (const quote of payload.data as Quote[]) {
-              byMostRecent.set(quote.symbol, quote)
-            }
-            return [...byMostRecent.values()]
-          })
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
+    let reconnectAttempts = 0
+    const maxReconnectAttempts = 5
+
+    const connect = () => {
+      try {
+        socket = new WebSocket(`${protocol}://${location.host}/ws`)
+
+        socket.onopen = () => {
+          reconnectAttempts = 0
         }
+
+        socket.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data)
+            if (payload.type === 'cycle' || payload.type === 'kill_switch') refresh()
+            if (payload.type === 'ticker' && Array.isArray(payload.data)) {
+              // Merge rather than replace: a push may carry only the symbols that
+              // moved, and dropping the rest would blank the tape.
+              setQuotes((current) => {
+                const byMostRecent = new Map(current.map((q) => [q.symbol, q]))
+                for (const quote of payload.data as Quote[]) {
+                  byMostRecent.set(quote.symbol, quote)
+                }
+                return [...byMostRecent.values()]
+              })
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        }
+
+        socket.onerror = () => {
+          // Errors are handled by onclose
+        }
+
+        socket.onclose = () => {
+          if (reconnectAttempts < maxReconnectAttempts) {
+            reconnectAttempts++
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 30000)
+            reconnectTimeout = setTimeout(connect, delay)
+          }
+        }
+      } catch {
+        // Polling already covers this; a failed socket is not fatal.
       }
-    } catch {
-      // Polling already covers this; a failed socket is not fatal.
     }
-    return () => socket?.close()
+
+    connect()
+
+    return () => {
+      if (socket) socket.close()
+      if (reconnectTimeout) clearTimeout(reconnectTimeout)
+    }
   }, [refresh])
 
   const account = status?.account
@@ -492,6 +528,8 @@ export default function App() {
       )}
 
       {tab === 'robotic' && <RoboticPanel />}
+
+      {tab === 'strikes' && <StrikePrices />}
 
       {tab === 'orders' && <OrdersPanel />}
 
