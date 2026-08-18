@@ -137,9 +137,15 @@ export default function App() {
 
     const pull = async () => {
       try {
-        const data = await api.ticker()
+        const [data, ...indexQuotes] = await Promise.all([
+          api.ticker(),
+          api.quote('BANKNIFTY'),
+          api.quote('NIFTY50'),
+          api.quote('FINNIFTY'),
+        ])
         if (cancelled) return
-        setQuotes(data.quotes)
+        const allQuotes = [...indexQuotes.filter((q): q is Quote => q !== null), ...data.quotes]
+        setQuotes(allQuotes)
         setTickerStatus(data.status)
       } catch {
         // Prices are non-critical; the main poll surfaces real outages.

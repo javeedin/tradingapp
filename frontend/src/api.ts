@@ -91,6 +91,9 @@ export const api = {
 
   ticker: () => request<{ quotes: Quote[]; status: TickerStatus }>('/ticker'),
 
+  quote: (symbol: string) =>
+    request<Quote>(`/quote/${encodeURIComponent(symbol)}`).catch(() => null),
+
   funds: () => request<FundsResponse>('/funds'),
 
   orderHistory: (limit = 200) =>
