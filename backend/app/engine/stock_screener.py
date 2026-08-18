@@ -141,7 +141,19 @@ class StockScreener:
     def screen_stocks(self, symbols: list[str] = None) -> dict[str, Any]:
         """Screen stocks for candidates."""
         if symbols is None:
-            symbols = ['NIFTY', 'INFY', 'TCS', 'RELIANCE', 'HDFC', 'ICICIBANK', 'SBIN']
+            # NIFTY50 stocks - liquid NSE shares
+            symbols = [
+                'ADANIPORTS', 'ASIANPAINT', 'AXISBANK', 'BAJAJ-AUTO', 'BAJAJFINSV',
+                'BPCL', 'BHARTIARTL', 'BRITANNIA', 'CIPLA', 'COALINDIA',
+                'COLPAL', 'DIVISLAB', 'DRREDDY', 'EICHERMOT', 'GAIL',
+                'GRASIM', 'HDFC', 'HDFCBANK', 'HEROMOTOCO', 'HINDALCO',
+                'HINDUNILVR', 'ICICIBANK', 'INDIGO', 'INFY', 'JSWSTEEL',
+                'KOTAKBANK', 'LT', 'LTIM', 'MARUTI', 'NESTLEIND',
+                'NTPC', 'ONGC', 'POWERGRID', 'RELIANCE', 'SBICARD',
+                'SBIN', 'SUNPHARMA', 'TCS', 'TATACONSUM', 'TATAMOTORS',
+                'TATAPOWER', 'TATASTEEL', 'TECHM', 'TITAN', 'TIINDIA',
+                'ULTRACEMCO', 'UPL', 'WIPRO'
+            ]
 
         candidates = []
         scan_timestamp = datetime.now().isoformat()
@@ -182,7 +194,7 @@ class StockScreener:
 
                 scoring = self.score_stock(candidate_data)
 
-                if scoring['score'] >= 50:  # Only show candidates with score >= 50
+                if scoring['score'] >= 30:  # Show candidates with score >= 30 (volume spike alone is 25pts)
                     candidate = {
                         'symbol': symbol,
                         'current_price': round(ltp, 2),
