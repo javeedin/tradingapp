@@ -7,6 +7,7 @@ import OptionChain from './components/OptionChain'
 import OrdersPanel from './components/OrdersPanel'
 import PositionsTable from './components/PositionsTable'
 import PriceChart from './components/PriceChart'
+import RoboticPanel from './components/RoboticPanel'
 import SessionPanel from './components/SessionPanel'
 import SettingsPanel from './components/SettingsPanel'
 import SignalsPanel from './components/SignalsPanel'
@@ -41,6 +42,7 @@ type Tab =
   | 'analyse'
   | 'options'
   | 'screener'
+  | 'robotic'
   | 'trade'
   | 'orders'
   | 'settings'
@@ -63,6 +65,7 @@ const NAV: { group: string; tabs: NavTab[] }[] = [
     group: 'Trade',
     tabs: [
       { id: 'trade', label: 'Place order', hint: 'Manual equity orders' },
+      { id: 'robotic', label: 'Robotic', hint: 'Automated trading picks' },
       { id: 'orders', label: 'Orders', hint: 'Every order attempt, and why it failed' },
       { id: 'settings', label: 'Settings', hint: 'Exit policy, risk, robotic trading' },
     ],
@@ -454,6 +457,8 @@ export default function App() {
       {tab === 'trade' && (
         <TradePanel universe={status?.symbols ?? []} mode={status?.mode ?? 'paper'} />
       )}
+
+      {tab === 'robotic' && <RoboticPanel />}
 
       {tab === 'orders' && <OrdersPanel />}
 
